@@ -67,8 +67,8 @@ COPY CMakeLists.txt CMakePresets.json ./
 COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
 
 RUN cmake --preset 'CPU' -DCMAKE_BUILD_TYPE=Release && \
-    cmake --build --parallel ${PARALLEL} --preset 'CPU' --config Release && \
-    cmake --install build --component CPU --strip --parallel ${PARALLEL}
+    cmake --build --preset 'CPU' --config Release && \
+    cmake --install build --component CPU --strip
 
 # ============================================================================
 # ЭТАП 4: CUDA 12 backend (отдельный builder на nvidia/cuda)
