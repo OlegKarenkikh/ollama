@@ -67,7 +67,7 @@ COPY CMakeLists.txt CMakePresets.json ./
 COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
 
 RUN cmake --preset 'CPU' -DCMAKE_BUILD_TYPE=Release && \
-    cmake --build --preset 'CPU' --config Release && \
+    cmake --build --preset 'CPU' --config Release --parallel ${PARALLEL} && \
     cmake --install build --component CPU --strip
 
 # ============================================================================
@@ -100,8 +100,8 @@ ENV PATH=/usr/local/cuda/bin:$PATH
 ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
 
 RUN cmake --preset 'CUDA 12' -DCMAKE_BUILD_TYPE=Release && \
-    cmake --build --parallel ${PARALLEL} --preset 'CUDA 12' --config Release && \
-    cmake --install build --component CUDA --strip --parallel ${PARALLEL}
+    cmake --build --preset 'CUDA 12' --config Release --parallel ${PARALLEL} && \
+    cmake --install build --component CUDA --strip
 
 # ============================================================================
 # ЭТАП 5: Go-приложение с исправлением CVE
