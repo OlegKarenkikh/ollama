@@ -1,0 +1,158 @@
+# vim: filetype=dockerfile
+# Ollama Ultra-Minimal Build - CUDA 12 + Linux AMD64 only
+# Минимальный размер, только CUDA 12, без CVE, без лишних зависимостей
+
+ARG PARALLEL=8
+ARG CMAKEVERSION=3.25.1
+
+# ============================================================================
+# ЭТАП 1: CUDA 12 builder (только CUDA backend)
+# ============================================================================
+FROM nvidia/cuda:12.8.0-devel-ubuntu22.04 AS cuda-builder
+
+ARG PARALLEL
+ARG CMAKEVERSION=3.25.1
+
+# Минимальные build-зависимости только для CUDA
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        curl \
+        ca-certificates \
+        build-essential \
+        ninja-build \
+        gcc \
+        g++ && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /usr/share/doc /usr/share/man
+
+# Установка CMake (только бинарник, без документации)
+RUN curl -fsSL https://github.com/Kitware/CMake/releases/download/v${CMAKEVERSION}/cmake-${CMAKEVERSION}-linux-x86_64.tar.gz \
+    | tar xz -C /usr/local --strip-components 1 && \
+    rm -rf /usr/local/doc /usr/local/man /usr/local/share/doc /usr/local/share/man
+
+WORKDIR /build
+
+COPY CMakeLists.txt CMakePresets.json ./
+COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
+
+ENV PATH=/usr/local/cuda/bin:$PATH
+ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
+
+# Сборка только CUDA компонента (без CPU)
+RUN cmake --preset 'CUDA 12' -DCMAKE_BUILD_TYPE=Release && \
+    cmake --build --parallel ${PARALLEL} --preset 'CUDA 12' --config Release && \
+    cmake --install build --component CUDA --strip && \
+    # Очистка временных файлов сборки
+    rm -rf /build/build /build/.cmake
+
+# ============================================================================
+# ЭТАП 2: Go builder (Debian-based для CGO)
+# ============================================================================
+FROM golang:1.24.1-bullseye AS go-builder
+
+WORKDIR /build
+
+# Минимальные зависимости для CGO
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        gcc \
+        libc6-dev && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /usr/share/doc /usr/share/man
+
+# Копируем только go.mod/go.sum для кеширования слоев
+COPY go.mod go.sum ./
+
+# Обновление зависимостей для устранения CVE
+RUN go env -w GOPROXY=https://proxy.golang.org,direct && \
+    go get golang.org/x/crypto@v0.45.0 gopkg.in/yaml.v3@v3.0.1 && \
+    go mod tidy && \
+    go mod verify && \
+    go mod download
+
+# Копируем исходный код
+COPY . .
+
+# Сборка с максимальными оптимизациями размера
+ENV CGO_ENABLED=1
+ENV GOOS=linux
+ENV GOARCH=amd64
+
+RUN go build \
+    -trimpath \
+    -buildmode=pie \
+    -ldflags="-w -s -linkmode=external -extldflags '-static'" \
+    -tags="netgo" \
+    -o /bin/ollama . && \
+    /bin/ollama --version && \
+    # Очистка кеша Go
+    go clean -cache -modcache -testcache
+
+# ============================================================================
+# ЭТАП 3: Финальный минимальный runtime (Ubuntu runtime)
+# ============================================================================
+FROM nvidia/cuda:12.8.0-runtime-ubuntu22.04
+
+LABEL maintainer="DevOps" \
+      version="1.0.0-minimal-cuda12-amd64" \
+      description="Ollama LLM minimal runtime CUDA 12 AMD64 Linux" \
+      platform="linux/amd64" \
+      cuda.version="12.8" \
+      security.scan="trivy,grype"
+
+# Минимальные runtime зависимости (только необходимое)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        libssl3 \
+        zlib1g && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* \
+           /tmp/* \
+           /var/tmp/* \
+           /usr/share/doc \
+           /usr/share/man \
+           /usr/share/locale \
+           /var/cache/apt/archives/*.deb \
+           /var/cache/apt/archives/partial/*.deb \
+           /var/cache/apt/*.bin && \
+    # Создаем символические ссылки для curl в healthcheck
+    ln -sf /usr/bin/curl /usr/local/bin/curl
+
+# Копируем только CUDA библиотеки (CPU backend исключен)
+COPY --from=cuda-builder /build/dist/lib/ollama /usr/lib/ollama/
+
+# Копируем Go бинарник
+COPY --from=go-builder /bin/ollama /usr/bin/ollama
+
+# CUDA environment variables
+ENV LD_LIBRARY_PATH=/usr/lib/ollama:/usr/local/cuda/lib64:$LD_LIBRARY_PATH
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
+ENV NVIDIA_VISIBLE_DEVICES=all
+
+# Непривилегированный пользователь
+RUN groupadd -r -g 1000 ollama && \
+    useradd -r -u 1000 -g ollama -s /bin/false -c "Ollama Service User" ollama && \
+    mkdir -p /home/ollama/.ollama/models && \
+    chown -R ollama:ollama /home/ollama /usr/lib/ollama && \
+    echo "OLLAMA_HOST=0.0.0.0:11434" > /home/ollama/.ollama/config && \
+    chown ollama:ollama /home/ollama/.ollama/config && \
+    # Удаляем ненужные утилиты
+    rm -f /usr/bin/which /usr/bin/wget /usr/bin/gzip /usr/bin/gunzip || true
+
+WORKDIR /home/ollama
+USER ollama
+
+ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    OLLAMA_HOST=0.0.0.0:11434 \
+    OLLAMA_MODELS=/home/ollama/.ollama/models \
+    HOME=/home/ollama
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:11434/api/tags || exit 1
+
+EXPOSE 11434
+
+ENTRYPOINT ["/usr/bin/ollama"]
+CMD ["serve"]
