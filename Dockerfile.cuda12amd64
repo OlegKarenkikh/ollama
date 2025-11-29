@@ -1,6 +1,7 @@
 # vim: filetype=dockerfile
-# Ollama Ultra-Minimal Build - CUDA 12 + Linux AMD64 only
+# Ollama Minimal Build - CUDA 12 + Linux AMD64 only
 # Минимальный размер, только CUDA 12, без CVE, без лишних зависимостей
+# Тег: cuda12amd64
 
 ARG CMAKEVERSION=3.25.1
 
@@ -36,7 +37,7 @@ COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
 ENV PATH=/usr/local/cuda/bin:$PATH
 ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
 
-# Сборка только CUDA компонента (без CPU)
+# Сборка только CUDA компонента (без CPU, без PARALLEL)
 RUN cmake --preset 'CUDA 12' -DCMAKE_BUILD_TYPE=Release && \
     cmake --build --preset 'CUDA 12' --config Release && \
     cmake --install build --component CUDA --strip && \
@@ -92,7 +93,7 @@ RUN go build \
 FROM nvidia/cuda:12.8.0-runtime-ubuntu22.04
 
 LABEL maintainer="DevOps" \
-      version="1.0.0-minimal-cuda12-amd64" \
+      version="1.0.0-cuda12amd64" \
       description="Ollama LLM minimal runtime CUDA 12 AMD64 Linux" \
       platform="linux/amd64" \
       cuda.version="12.8" \
