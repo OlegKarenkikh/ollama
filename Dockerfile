@@ -101,7 +101,7 @@ ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
 
 RUN cmake --preset 'CUDA 12' -DCMAKE_BUILD_TYPE=Release && \
     cmake --build --parallel ${PARALLEL} --preset 'CUDA 12' --config Release && \
-    cmake --install build --component CUDA --strip --parallel ${PARALLEL}
+    cmake --install build --component CUDA --strip
 
 # ============================================================================
 # ЭТАП 5: Go-приложение с исправлением CVE
