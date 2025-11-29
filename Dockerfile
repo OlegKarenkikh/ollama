@@ -67,7 +67,7 @@ COPY CMakeLists.txt CMakePresets.json ./
 COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
 
 RUN cmake --preset 'CPU' -DCMAKE_BUILD_TYPE=Release && \
-    cmake --build --preset 'CPU' --config Release && \
+    cmake --build --preset 'CPU' --config Release --parallel ${PARALLEL} && \
     cmake --install build --component CPU --strip
 
 # ============================================================================
