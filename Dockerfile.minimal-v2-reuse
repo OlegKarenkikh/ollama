@@ -1,0 +1,70 @@
+# vim: filetype=dockerfile
+# Ollama Minimal Build - CUDA 12 + Linux AMD64 only
+# Переиспользует CUDA и GO слои из первого варианта (cuda12amd64)
+# Минимальный размер, только CUDA 12, без CVE уязвимостей
+
+# ============================================================================
+# ЭТАП 1: Переиспользуем CUDA builder из первого варианта
+# ============================================================================
+FROM olegkarenkikh/ollama:cuda12amd64-cuda-builder AS cuda-builder
+
+# ============================================================================
+# ЭТАП 2: Переиспользуем Go builder из первого варианта
+# ============================================================================
+FROM olegkarenkikh/ollama:cuda12amd64-go-builder AS go-builder
+
+# ============================================================================
+# ЭТАП 3: Финальный минимальный runtime
+# ============================================================================
+FROM nvidia/cuda:12.8.0-runtime-ubuntu22.04
+
+LABEL maintainer="DevOps" \
+      version="1.0.0-minimal-v2-cuda12-amd64-reuse" \
+      description="Ollama LLM minimal runtime CUDA 12 AMD64 (reusing layers)" \
+      platform="linux/amd64" \
+      cuda.version="12.8"
+
+# Минимальные runtime зависимости
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        libssl3 \
+        zlib1g && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /usr/share/doc /usr/share/man
+
+# Копируем только CUDA библиотеки из переиспользованного builder
+COPY --from=cuda-builder /build/dist/lib/ollama /usr/lib/ollama/
+
+# Копируем Go бинарник из переиспользованного builder
+COPY --from=go-builder /bin/ollama /usr/bin/ollama
+
+# CUDA environment
+ENV LD_LIBRARY_PATH=/usr/lib/ollama:/usr/local/cuda/lib64:$LD_LIBRARY_PATH
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
+ENV NVIDIA_VISIBLE_DEVICES=all
+
+# Непривилегированный пользователь
+RUN groupadd -r -g 1000 ollama && \
+    useradd -r -u 1000 -g ollama -s /bin/false -c "Ollama Service User" ollama && \
+    mkdir -p /home/ollama/.ollama/models && \
+    chown -R ollama:ollama /home/ollama /usr/lib/ollama && \
+    echo "OLLAMA_HOST=0.0.0.0:11434" > /home/ollama/.ollama/config && \
+    chown ollama:ollama /home/ollama/.ollama/config
+
+WORKDIR /home/ollama
+USER ollama
+
+ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    OLLAMA_HOST=0.0.0.0:11434 \
+    OLLAMA_MODELS=/home/ollama/.ollama/models \
+    HOME=/home/ollama
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:11434/api/tags || exit 1
+
+EXPOSE 11434
+
+ENTRYPOINT ["/usr/bin/ollama"]
+CMD ["serve"]
