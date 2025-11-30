@@ -58,17 +58,30 @@ build_final_image() {
     local build_args=$3
     
     echo "🔨 Сборка финального образа из ${dockerfile}..."
+    local build_output=$(mktemp)
+    local build_exit_code=0
+    
     if sudo docker buildx build \
         --platform linux/amd64 \
         -f "${dockerfile}" \
         -t "${DOCKER_USER}/${IMAGE_NAME}:${tag}" \
         --push \
         ${build_args} \
-        . 2>&1 | tee -a "${LOG_FILE}"; then
-        echo "✅ Финальный образ собран и запушен: ${tag}"
-        return 0
+        . 2>&1 | tee -a "${LOG_FILE}" "${build_output}"; then
+        # Проверяем, что действительно был push (ищем "pushing" или "pushed" в выводе)
+        if grep -qE "pushing|pushed|exporting|exported" "${build_output}" && ! grep -qE "ERROR|failed" "${build_output}"; then
+            echo "✅ Финальный образ собран и запушен: ${tag}"
+            rm -f "${build_output}"
+            return 0
+        else
+            echo "❌ Ошибка: образ собран, но push не выполнен или завершился с ошибкой"
+            rm -f "${build_output}"
+            return 1
+        fi
     else
-        echo "❌ Ошибка сборки финального образа"
+        build_exit_code=$?
+        echo "❌ Ошибка сборки финального образа (код выхода: ${build_exit_code})"
+        rm -f "${build_output}"
         return 1
     fi
 }
