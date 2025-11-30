@@ -61,7 +61,9 @@ RUN --mount=type=cache,target=/root/.ccache \
 
 FROM base AS cuda-11
 ARG CUDA11VERSION=11.8
-RUN dnf install -y cuda-toolkit-${CUDA11VERSION//./-} \
+RUN --mount=type=cache,target=/var/cache/dnf \
+    dnf clean all \
+    && dnf install -y --setopt=keepcache=False --setopt=install_weak_deps=False cuda-toolkit-${CUDA11VERSION//./-} \
     && dnf update -y --security \
     && dnf clean all
 ENV PATH=/usr/local/cuda-11/bin:$PATH
@@ -75,7 +77,9 @@ RUN --mount=type=cache,target=/root/.ccache \
 
 FROM base AS cuda-12
 ARG CUDA12VERSION=12.8
-RUN dnf install -y cuda-toolkit-${CUDA12VERSION//./-} \
+RUN --mount=type=cache,target=/var/cache/dnf \
+    dnf clean all \
+    && dnf install -y --setopt=keepcache=False --setopt=install_weak_deps=False cuda-toolkit-${CUDA12VERSION//./-} \
     && dnf update -y --security \
     && dnf clean all
 ENV PATH=/usr/local/cuda-12/bin:$PATH
@@ -90,7 +94,9 @@ RUN --mount=type=cache,target=/root/.ccache \
 
 FROM base AS cuda-13
 ARG CUDA13VERSION=13.0
-RUN dnf install -y cuda-toolkit-${CUDA13VERSION//./-} \
+RUN --mount=type=cache,target=/var/cache/dnf \
+    dnf clean all \
+    && dnf install -y --setopt=keepcache=False --setopt=install_weak_deps=False cuda-toolkit-${CUDA13VERSION//./-} \
     && dnf update -y --security \
     && dnf clean all
 ENV PATH=/usr/local/cuda-13/bin:$PATH
