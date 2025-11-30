@@ -22,9 +22,13 @@ RUN yum install -y yum-utils \
     && dnf clean all
 ENV PATH=/opt/rh/gcc-toolset-10/root/usr/bin:$PATH
 ARG VULKANVERSION
-RUN wget https://sdk.lunarg.com/sdk/download/${VULKANVERSION}/linux/vulkansdk-linux-x86_64-${VULKANVERSION}.tar.xz -O /tmp/vulkansdk-linux-x86_64-${VULKANVERSION}.tar.xz \
+RUN dnf -y install ninja-build --disablerepo=ROCm --skip-unavailable 2>/dev/null || \
+    (yum-config-manager --disable ROCm 2>/dev/null || true) && \
+    dnf -y install ninja-build --skip-unavailable || \
+    (curl -L https://github.com/ninja-build/ninja/releases/download/v1.11.1/ninja-linux.zip -o /tmp/ninja.zip && \
+     unzip /tmp/ninja.zip -d /usr/local/bin && chmod +x /usr/local/bin/ninja && rm /tmp/ninja.zip) && \
+    wget https://sdk.lunarg.com/sdk/download/${VULKANVERSION}/linux/vulkansdk-linux-x86_64-${VULKANVERSION}.tar.xz -O /tmp/vulkansdk-linux-x86_64-${VULKANVERSION}.tar.xz \
     && tar xvf /tmp/vulkansdk-linux-x86_64-${VULKANVERSION}.tar.xz \
-    && dnf -y install ninja-build \
     && ln -s /usr/bin/python3 /usr/bin/python \  
     && /${VULKANVERSION}/vulkansdk -j 8 vulkan-headers \
     && /${VULKANVERSION}/vulkansdk -j 8 shaderc \

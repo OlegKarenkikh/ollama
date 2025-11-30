@@ -1,0 +1,19 @@
+FROM ubuntu:24.04
+RUN apt-get update \
+    && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends ca-certificates libvulkan1 openssl libssl3 \
+    && apt-get upgrade -y openssl libssl3 ca-certificates \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* \
+    && update-ca-certificates
+WORKDIR /app
+COPY . .
+RUN if [ -f /app/bin/ollama ]; then cp /app/bin/ollama /usr/bin/ollama; else echo "ollama binary not found"; fi
+ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ENV OLLAMA_HOST=0.0.0.0:11434
+RUN groupadd -r ollama && useradd -r -g ollama ollama \
+    && chown -R ollama:ollama /usr/bin/ollama 2>/dev/null || true
+USER ollama
+EXPOSE 11434
+ENTRYPOINT ["/usr/bin/ollama"]
+CMD ["serve"]
