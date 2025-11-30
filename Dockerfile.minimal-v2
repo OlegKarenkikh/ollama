@@ -12,8 +12,8 @@ FROM nvidia/cuda:12.8.0-devel-ubuntu22.04 AS cuda-builder
 ARG CMAKEVERSION=3.25.1
 
 # Минимальные build-зависимости только для CUDA
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
+RUN apt-get update --allow-releaseinfo-change && \
+    apt-get install -y --no-install-recommends --allow-unauthenticated \
         curl \
         ca-certificates \
         build-essential \

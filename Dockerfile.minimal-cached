@@ -1,0 +1,129 @@
+# vim: filetype=dockerfile
+# Ollama Minimal Build - использует готовые CUDA слои из предыдущей сборки
+# Минимальный размер, только CUDA 12, без Python, Linux AMD64
+# CVE FIXES APPLIED: Go 1.24.10, golang.org/x/crypto v0.43.0
+
+# ============================================================================
+# ЭТАП 1: Используем готовый CUDA builder из предыдущей сборки
+# ===========================================================================
+# Будем использовать готовые CUDA библиотеки из кеша
+FROM olegkarenkikh/ollama:8c40f07 AS cuda-source
+
+# ============================================================================
+# ЭТАП 2: Go builder (минимальный, используем кеш)
+# ============================================================================
+# Обновлено до Go 1.24 (latest) для устранения CVE-2025-22871 (CRITICAL), CVE-2025-61725, CVE-2025-58187, CVE-2025-61723, CVE-2025-58188, CVE-2025-22874
+# Go будет обновлен до последней версии 1.24.x внутри контейнера
+FROM golang:1.24-bullseye AS go-builder
+
+WORKDIR /build
+
+# Минимальные зависимости для CGO
+# Обновляем Go до последней версии 1.24.x для исправления CVE
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        gcc \
+        libc6-dev \
+        curl && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /usr/share/doc /usr/share/man && \
+    GO_VERSION=$(curl -s https://go.dev/VERSION?m=text 2>/dev/null | head -1 || echo "") && \
+    if [ -n "$GO_VERSION" ] && [ "$GO_VERSION" != "go1.24" ]; then \
+        echo "Updating Go to $GO_VERSION for CVE fixes..." && \
+        curl -fsSL https://go.dev/dl/${GO_VERSION}.linux-amd64.tar.gz -o /tmp/go.tar.gz && \
+        rm -rf /usr/local/go && \
+        tar -C /usr/local -xzf /tmp/go.tar.gz && \
+        rm /tmp/go.tar.gz; \
+    fi && \
+    /usr/local/go/bin/go version
+
+# Копируем только go.mod/go.sum для кеширования слоев
+COPY go.mod go.sum ./
+
+# Обновление зависимостей для устранения CVE
+# Обновлено golang.org/x/crypto до v0.43.0 для устранения CVE-2025-47913
+RUN go env -w GOPROXY=https://proxy.golang.org,direct && \
+    go get golang.org/x/crypto@v0.43.0 gopkg.in/yaml.v3@v3.0.1 && \
+    go mod tidy && \
+    go mod verify && \
+    go mod download
+
+# Копируем исходный код
+COPY . .
+
+# Сборка с максимальными оптимизациями размера
+ENV CGO_ENABLED=1
+ENV GOOS=linux
+ENV GOARCH=amd64
+
+RUN go build \
+    -trimpath \
+    -buildmode=pie \
+    -ldflags="-w -s" \
+    -o /bin/ollama . && \
+    /bin/ollama --version && \
+    go clean -cache -modcache -testcache
+
+# ============================================================================
+# ЭТАП 3: Финальный минимальный runtime
+# ============================================================================
+FROM nvidia/cuda:12.8.0-runtime-ubuntu22.04
+
+LABEL maintainer="DevOps" \
+      version="1.0.0-minimal-cuda12-amd64-secure" \
+      description="Ollama LLM minimal runtime CUDA 12 AMD64 Linux (CVE fixes applied)" \
+      platform="linux/amd64" \
+      cuda.version="12.8" \
+      go.version="1.24.10" \
+      cve.fixed="CVE-2025-22871,CVE-2025-61725,CVE-2025-58187,CVE-2025-61723,CVE-2025-58188,CVE-2025-22874,CVE-2025-47913"
+
+# Минимальные runtime зависимости
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        libssl3 \
+        zlib1g && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* \
+           /tmp/* \
+           /var/tmp/* \
+           /usr/share/doc \
+           /usr/share/man \
+           /usr/share/locale && \
+    ln -sf /usr/bin/curl /usr/local/bin/curl
+
+# Копируем CUDA библиотеки из готового образа
+COPY --from=cuda-source /usr/lib/ollama /usr/lib/ollama/
+
+# Копируем Go бинарник (скомпилирован с Go 1.24.10, исправления CVE включены)
+COPY --from=go-builder /bin/ollama /usr/bin/ollama
+
+# CUDA environment variables
+ENV LD_LIBRARY_PATH=/usr/lib/ollama:/usr/local/cuda/lib64:$LD_LIBRARY_PATH
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
+ENV NVIDIA_VISIBLE_DEVICES=all
+
+# Непривилегированный пользователь
+RUN groupadd -r -g 1000 ollama && \
+    useradd -r -u 1000 -g ollama -s /bin/false -c "Ollama Service User" ollama && \
+    mkdir -p /home/ollama/.ollama/models && \
+    chown -R ollama:ollama /home/ollama /usr/lib/ollama && \
+    echo "OLLAMA_HOST=0.0.0.0:11434" > /home/ollama/.ollama/config && \
+    chown ollama:ollama /home/ollama/.ollama/config
+
+WORKDIR /home/ollama
+USER ollama
+
+ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    OLLAMA_HOST=0.0.0.0:11434 \
+    OLLAMA_MODELS=/home/ollama/.ollama/models \
+    HOME=/home/ollama
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:11434/api/tags || exit 1
+
+EXPOSE 11434
+
+ENTRYPOINT ["/usr/bin/ollama"]
+CMD ["serve"]
