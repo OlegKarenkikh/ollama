@@ -110,7 +110,7 @@ FROM base AS go-builder
 WORKDIR /go/src/github.com/ollama/ollama
 
 # Установка ПОЛНОГО Go 1.24.1 (c stdlib, без удаления src)
-RUN curl -fsSL https://golang.org/dl/go1.24.linux-amd64.tar.gz \
+RUN curl -fsSL https://golang.org/dl/go1.24.9.linux-amd64.tar.gz \
     | tar xz -C /usr/local
 
 ENV PATH=/usr/local/go/bin:$PATH

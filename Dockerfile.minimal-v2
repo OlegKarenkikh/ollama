@@ -50,8 +50,9 @@ FROM golang:1.24-bullseye AS go-builder
 
 WORKDIR /build
 
-# Минимальные зависимости для CGO
+# Минимальные зависимости для CGO + обновление безопасности
 RUN apt-get update && \
+    apt-get upgrade -y git openssl libpam-runtime || true && \
     apt-get install -y --no-install-recommends \
         gcc \
         libc6-dev && \

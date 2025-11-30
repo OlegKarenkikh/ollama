@@ -24,8 +24,9 @@ LABEL maintainer="DevOps" \
       cuda.version="12.8" \
       security.scan="trivy,grype"
 
-# Минимальные runtime зависимости (только необходимое)
+# Минимальные runtime зависимости (только необходимое) + обновление безопасности
 RUN apt-get update && \
+    apt-get upgrade -y openssl || true && \
     apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
