@@ -1,0 +1,32 @@
+# vim: filetype=dockerfile
+# Ollama Minimal V2 - Промежуточный образ до этапа создания пользователя
+
+FROM nvidia/cuda:12.8.0-runtime-ubuntu22.04
+
+LABEL maintainer="DevOps" \
+      version="1.0.0-minimal-v2-intermediate" \
+      description="Ollama LLM minimal runtime CUDA 12 AMD64 (intermediate stage)" \
+      platform="linux/amd64" \
+      cuda.version="12.8"
+
+# Минимальные runtime зависимости + обновление безопасности
+RUN apt-get update && \
+    apt-get upgrade -y openssl || true && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        libssl3 \
+        zlib1g && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /usr/share/doc /usr/share/man
+
+# Копируем CUDA библиотеки из переиспользованного builder
+COPY --from=olegkarenkikh/ollama:cuda12amd64-cuda-builder /build/dist/lib/ollama /usr/lib/ollama/
+
+# Копируем Go бинарник из переиспользованного builder
+COPY --from=olegkarenkikh/ollama:cuda12amd64-go-builder /bin/ollama /usr/bin/ollama
+
+# CUDA environment
+ENV LD_LIBRARY_PATH=/usr/lib/ollama:/usr/local/cuda/lib64:$LD_LIBRARY_PATH
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
+ENV NVIDIA_VISIBLE_DEVICES=all
