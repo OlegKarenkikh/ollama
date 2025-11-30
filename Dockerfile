@@ -65,13 +65,19 @@ RUN --mount=type=cache,target=/var/cache/dnf \
     dnf clean all \
     && dnf install -y --setopt=keepcache=False --setopt=install_weak_deps=False cuda-toolkit-${CUDA11VERSION//./-} \
     && dnf update -y --security \
-    && dnf clean all
+    && dnf clean all \
+    && test -d /usr/local/cuda-11 || (echo "CUDA installation not found at /usr/local/cuda-11" && ls -la /usr/local/ && exit 1) \
+    && test -f /usr/local/cuda-11/bin/nvcc || (echo "nvcc not found" && exit 1)
 ENV PATH=/usr/local/cuda-11/bin:$PATH
+ENV CUDA_HOME=/usr/local/cuda-11
+ENV CUDAToolkit_ROOT=/usr/local/cuda-11
+ENV LD_LIBRARY_PATH=/usr/local/cuda-11/lib64:$LD_LIBRARY_PATH
 ARG PARALLEL
 COPY CMakeLists.txt CMakePresets.json .
 COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
 RUN --mount=type=cache,target=/root/.ccache \
-    cmake --preset 'CUDA 11' \
+    nvcc --version \
+    && cmake --preset 'CUDA 11' -DCUDAToolkit_ROOT=/usr/local/cuda-11 \
         && cmake --build --parallel ${PARALLEL} --preset 'CUDA 11' \
         && cmake --install build --component CUDA --strip --parallel ${PARALLEL}
 
@@ -81,13 +87,19 @@ RUN --mount=type=cache,target=/var/cache/dnf \
     dnf clean all \
     && dnf install -y --setopt=keepcache=False --setopt=install_weak_deps=False cuda-toolkit-${CUDA12VERSION//./-} \
     && dnf update -y --security \
-    && dnf clean all
+    && dnf clean all \
+    && test -d /usr/local/cuda-12 || (echo "CUDA installation not found at /usr/local/cuda-12" && ls -la /usr/local/ && exit 1) \
+    && test -f /usr/local/cuda-12/bin/nvcc || (echo "nvcc not found" && exit 1)
 ENV PATH=/usr/local/cuda-12/bin:$PATH
+ENV CUDA_HOME=/usr/local/cuda-12
+ENV CUDAToolkit_ROOT=/usr/local/cuda-12
+ENV LD_LIBRARY_PATH=/usr/local/cuda-12/lib64:$LD_LIBRARY_PATH
 ARG PARALLEL
 COPY CMakeLists.txt CMakePresets.json .
 COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
 RUN --mount=type=cache,target=/root/.ccache \
-    cmake --preset 'CUDA 12' \
+    nvcc --version \
+    && cmake --preset 'CUDA 12' -DCUDAToolkit_ROOT=/usr/local/cuda-12 \
         && cmake --build --parallel ${PARALLEL} --preset 'CUDA 12' \
         && cmake --install build --component CUDA --strip --parallel ${PARALLEL}
 
@@ -98,13 +110,19 @@ RUN --mount=type=cache,target=/var/cache/dnf \
     dnf clean all \
     && dnf install -y --setopt=keepcache=False --setopt=install_weak_deps=False cuda-toolkit-${CUDA13VERSION//./-} \
     && dnf update -y --security \
-    && dnf clean all
+    && dnf clean all \
+    && test -d /usr/local/cuda-13 || (echo "CUDA installation not found at /usr/local/cuda-13" && ls -la /usr/local/ && exit 1) \
+    && test -f /usr/local/cuda-13/bin/nvcc || (echo "nvcc not found" && exit 1)
 ENV PATH=/usr/local/cuda-13/bin:$PATH
+ENV CUDA_HOME=/usr/local/cuda-13
+ENV CUDAToolkit_ROOT=/usr/local/cuda-13
+ENV LD_LIBRARY_PATH=/usr/local/cuda-13/lib64:$LD_LIBRARY_PATH
 ARG PARALLEL
 COPY CMakeLists.txt CMakePresets.json .
 COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
 RUN --mount=type=cache,target=/root/.ccache \
-    cmake --preset 'CUDA 13' \
+    nvcc --version \
+    && cmake --preset 'CUDA 13' -DCUDAToolkit_ROOT=/usr/local/cuda-13 \
         && cmake --build --parallel ${PARALLEL} --preset 'CUDA 13' \
         && cmake --install build --component CUDA --strip --parallel ${PARALLEL}
 
