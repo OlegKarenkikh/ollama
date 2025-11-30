@@ -14,6 +14,15 @@ echo ""
 sudo touch "${LOG_FILE}"
 sudo chmod 666 "${LOG_FILE}"
 
+# Функция для очистки кэша после сборки образа
+cleanup_after_build() {
+    echo "🧹 Очистка кэша после сборки..." | tee -a "${LOG_FILE}"
+    sudo docker buildx prune -f 2>&1 | tee -a "${LOG_FILE}" || true
+    sudo docker system prune -f 2>&1 | tee -a "${LOG_FILE}" || true
+    df -h / | tail -1 | tee -a "${LOG_FILE}"
+    echo "" | tee -a "${LOG_FILE}"
+}
+
 # Функция для сборки финального образа с проверкой успешности push
 build_final_image() {
     local dockerfile=$1
@@ -35,6 +44,8 @@ build_final_image() {
         if grep -qE "pushing|pushed|exporting|exported" "${build_output}" && ! grep -qE "ERROR|failed" "${build_output}"; then
             echo "✅ Финальный образ собран и запушен: ${tag}" | tee -a "${LOG_FILE}"
             rm -f "${build_output}"
+            # Очищаем кэш после успешной сборки
+            cleanup_after_build
             return 0
         else
             echo "❌ Ошибка: образ собран, но push не выполнен или завершился с ошибкой" | tee -a "${LOG_FILE}"
