@@ -92,38 +92,39 @@ build_final_image "Dockerfile.cuda12amd64" "cuda12amd64" ""
 echo ""
 
 # ============================================================================
-# ВАРИАНТ 2: Dockerfile.minimal
+# ВАРИАНТ 2: Dockerfile.minimal (с переиспользованием слоев из варианта 1)
 # ============================================================================
 echo "════════════════════════════════════════════════════════════════"
-echo "ВАРИАНТ 2: Dockerfile.minimal"
+echo "ВАРИАНТ 2: Dockerfile.minimal-reuse (переиспользует CUDA и GO слои)"
 echo "════════════════════════════════════════════════════════════════"
 
-# Этап 1: CUDA builder
-build_and_push_stage "Dockerfile.minimal" "cuda-builder" "minimal-cuda-builder" ""
+# Переиспользуем уже собранные и запушенные слои из варианта 1
+# CUDA builder: olegkarenkikh/ollama:cuda12amd64-cuda-builder
+# GO builder: olegkarenkikh/ollama:cuda12amd64-go-builder
 
-# Этап 2: Go builder
-build_and_push_stage "Dockerfile.minimal" "go-builder" "minimal-go-builder" ""
-
-# Финальный образ
-build_final_image "Dockerfile.minimal" "minimal" ""
+# Финальный образ (переиспользует слои из Docker Hub)
+build_final_image "Dockerfile.minimal-reuse" "minimal" ""
 
 echo ""
 
 # ============================================================================
-# ВАРИАНТ 3: Dockerfile.minimal-v2
+# ВАРИАНТ 3: Dockerfile.minimal-v2 (с переиспользованием слоев из варианта 1)
 # ============================================================================
 echo "════════════════════════════════════════════════════════════════"
-echo "ВАРИАНТ 3: Dockerfile.minimal-v2"
+echo "ВАРИАНТ 3: Dockerfile.minimal-v2-reuse (переиспользует CUDA и GO слои)"
 echo "════════════════════════════════════════════════════════════════"
 
-# Этап 1: CUDA builder
-build_and_push_stage "Dockerfile.minimal-v2" "cuda-builder" "minimal-v2-cuda-builder" ""
+# Переиспользуем уже собранные и запушенные слои из варианта 1
+# CUDA builder: olegkarenkikh/ollama:cuda12amd64-cuda-builder
+# GO builder: olegkarenkikh/ollama:cuda12amd64-go-builder
 
-# Этап 2: Go builder
-build_and_push_stage "Dockerfile.minimal-v2" "go-builder" "minimal-v2-go-builder" ""
+# Создаем Dockerfile.minimal-v2-reuse на основе Dockerfile.minimal-reuse
+# (они идентичны по структуре, только метки разные)
+cp Dockerfile.minimal-reuse Dockerfile.minimal-v2-reuse
+sed -i 's/version="1.0.0-minimal-cuda12-amd64-reuse"/version="1.0.0-minimal-v2-cuda12-amd64-reuse"/' Dockerfile.minimal-v2-reuse
 
-# Финальный образ
-build_final_image "Dockerfile.minimal-v2" "minimal-v2" ""
+# Финальный образ (переиспользует слои из Docker Hub)
+build_final_image "Dockerfile.minimal-v2-reuse" "minimal-v2" ""
 
 echo ""
 
