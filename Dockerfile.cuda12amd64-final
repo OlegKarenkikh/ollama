@@ -1,0 +1,37 @@
+# vim: filetype=dockerfile
+# Ollama CUDA 12 AMD64 - Финальный образ, использует промежуточный слой
+# Тег: cuda12amd64
+
+FROM olegkarenkikh/ollama:cuda12amd64-intermediate
+
+LABEL maintainer="DevOps" \
+      version="1.0.0-cuda12amd64-final" \
+      description="Ollama LLM runtime CUDA 12 AMD64 Linux (final)" \
+      platform="linux/amd64" \
+      cuda.version="12.8" \
+      security.scan="trivy,grype"
+
+# Непривилегированный пользователь
+RUN groupadd -r -g 1000 ollama && \
+    useradd -r -u 1000 -g ollama -s /bin/false -c "Ollama Service User" ollama && \
+    mkdir -p /home/ollama/.ollama/models && \
+    chown -R ollama:ollama /home/ollama /usr/lib/ollama && \
+    echo "OLLAMA_HOST=0.0.0.0:11434" > /home/ollama/.ollama/config && \
+    chown ollama:ollama /home/ollama/.ollama/config && \
+    rm -f /usr/bin/which /usr/bin/wget /usr/bin/gzip /usr/bin/gunzip || true
+
+WORKDIR /home/ollama
+USER ollama
+
+ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    OLLAMA_HOST=0.0.0.0:11434 \
+    OLLAMA_MODELS=/home/ollama/.ollama/models \
+    HOME=/home/ollama
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:11434/api/tags || exit 1
+
+EXPOSE 11434
+
+ENTRYPOINT ["/usr/bin/ollama"]
+CMD ["serve"]
