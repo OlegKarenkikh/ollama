@@ -1,0 +1,86 @@
+# vim: filetype=dockerfile
+# Ollama Astra Linux UBI - Переиспользует промежуточные слои
+# Тег: astra
+
+# ============================================================================
+# ЭТАП 1: Переиспользуем промежуточные образы из варианта 4
+# ============================================================================
+FROM olegkarenkikh/ollama:astra-python-source AS python-source
+FROM olegkarenkikh/ollama:astra-base AS base
+FROM olegkarenkikh/ollama:astra-cpu AS cpu
+FROM olegkarenkikh/ollama:astra-cuda-builder AS cuda-builder
+FROM olegkarenkikh/ollama:astra-go-builder AS go-builder
+
+# ============================================================================
+# ЭТАП 2: Финальный runtime Astra UBI 1.8.1
+# ============================================================================
+FROM registry.astralinux.ru/library/astra/ubi18:1.8.1
+
+LABEL maintainer="DevOps INGOS <devops@ingos.ru>" \
+      version="1.0.0-secure-cuda12-amd64-astra-reuse" \
+      description="Ollama LLM runtime CUDA 12 AMD64 Astra Linux UBI 1.8.1 (reusing layers)" \
+      vendor="INGOS Corporation" \
+      security.scan="trivy,grype" \
+      base.image="astra-ubi18:1.8.1" \
+      cuda.version="12.8" \
+      platform="linux/amd64" \
+      python.version="3.12"
+
+# Минимальный runtime Python 3.12
+COPY --from=python-source /usr/local/lib/python3.12 /usr/local/lib/python3.12
+COPY --from=python-source /usr/local/bin/python3.12 /usr/local/bin/python3.12
+COPY --from=python-source /usr/local/bin/pip3.12 /usr/local/bin/pip3.12
+COPY --from=python-source /usr/local/bin/python /usr/local/bin/python
+
+RUN ldconfig
+
+# Минимальные runtime-зависимости (без upgrade)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        libvulkan1 \
+        libssl3 \
+        zlib1g \
+        libffi8 \
+        liblzma5 && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* && \
+    ln -sf /usr/local/bin/python3.12 /usr/bin/python3 && \
+    ln -sf /usr/local/bin/pip3.12 /usr/bin/pip3
+
+# Копируем бинарники и библиотеки
+COPY --from=go-builder /bin/ollama /usr/bin/ollama
+COPY --from=cpu /build/dist/lib/ollama /usr/lib/ollama/
+COPY --from=cuda-builder /build/dist/lib/ollama /usr/lib/ollama/
+
+# CUDA env
+ENV LD_LIBRARY_PATH=/usr/lib/ollama:/usr/local/lib:/usr/local/cuda/lib64:$LD_LIBRARY_PATH
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
+ENV NVIDIA_VISIBLE_DEVICES=all
+
+# Непривилегированный пользователь
+RUN groupadd -r -g 1000 ollama && \
+    useradd -r -u 1000 -g ollama -s /bin/false -c "Ollama Service User" ollama && \
+    mkdir -p /home/ollama/.ollama /home/ollama/.ollama/models && \
+    chown -R ollama:ollama /home/ollama /usr/lib/ollama && \
+    echo "OLLAMA_HOST=0.0.0.0:11434" > /home/ollama/.ollama/config && \
+    chown ollama:ollama /home/ollama/.ollama/config
+
+WORKDIR /home/ollama
+USER ollama
+
+ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    OLLAMA_HOST=0.0.0.0:11434 \
+    OLLAMA_MODELS=/home/ollama/.ollama/models \
+    PYTHONUNBUFFERED=1 \
+    HOME=/home/ollama \
+    PYTHONPATH=/usr/local/lib/python3.12
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:11434/api/tags || exit 1
+
+EXPOSE 11434
+
+ENTRYPOINT ["/usr/bin/ollama"]
+CMD ["serve"]
