@@ -51,7 +51,7 @@ RUN dnf install -y gcc-toolset-11-gcc gcc-toolset-11-gcc-c++ \
     && dnf update -y --security \
     && dnf clean all
 ENV PATH=/opt/rh/gcc-toolset-11/root/usr/bin:$PATH
-ARG PARALLEL
+ARG PARALLEL=8
 COPY CMakeLists.txt CMakePresets.json .
 COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
 RUN --mount=type=cache,target=/root/.ccache \
@@ -72,7 +72,7 @@ ENV PATH=/usr/local/cuda-11/bin:$PATH
 ENV CUDA_HOME=/usr/local/cuda-11
 ENV CUDAToolkit_ROOT=/usr/local/cuda-11
 ENV LD_LIBRARY_PATH=/usr/local/cuda-11/lib64:$LD_LIBRARY_PATH
-ARG PARALLEL
+ARG PARALLEL=8
 COPY CMakeLists.txt CMakePresets.json .
 COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
 RUN --mount=type=cache,target=/root/.ccache \
@@ -94,7 +94,7 @@ ENV PATH=/usr/local/cuda-12/bin:$PATH
 ENV CUDA_HOME=/usr/local/cuda-12
 ENV CUDAToolkit_ROOT=/usr/local/cuda-12
 ENV LD_LIBRARY_PATH=/usr/local/cuda-12/lib64:$LD_LIBRARY_PATH
-ARG PARALLEL
+ARG PARALLEL=8
 COPY CMakeLists.txt CMakePresets.json .
 COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
 RUN --mount=type=cache,target=/root/.ccache \
@@ -117,7 +117,7 @@ ENV PATH=/usr/local/cuda-13/bin:$PATH
 ENV CUDA_HOME=/usr/local/cuda-13
 ENV CUDAToolkit_ROOT=/usr/local/cuda-13
 ENV LD_LIBRARY_PATH=/usr/local/cuda-13/lib64:$LD_LIBRARY_PATH
-ARG PARALLEL
+ARG PARALLEL=8
 COPY CMakeLists.txt CMakePresets.json .
 COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
 RUN --mount=type=cache,target=/root/.ccache \
@@ -129,7 +129,7 @@ RUN --mount=type=cache,target=/root/.ccache \
 
 FROM base AS rocm-6
 ENV PATH=/opt/rocm/hcc/bin:/opt/rocm/hip/bin:/opt/rocm/bin:/opt/rocm/hcc/bin:$PATH
-ARG PARALLEL
+ARG PARALLEL=8
 COPY CMakeLists.txt CMakePresets.json .
 COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
 RUN --mount=type=cache,target=/root/.ccache \
@@ -147,7 +147,7 @@ RUN apt-get update && apt-get install -y curl ccache \
     && curl -fsSL https://github.com/Kitware/CMake/releases/download/v${CMAKEVERSION}/cmake-${CMAKEVERSION}-linux-$(uname -m).tar.gz | tar xz -C /usr/local --strip-components 1
 COPY CMakeLists.txt CMakePresets.json .
 COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
-ARG PARALLEL
+ARG PARALLEL=8
 RUN --mount=type=cache,target=/root/.ccache \
     cmake --preset 'JetPack 5' \
         && cmake --build --parallel ${PARALLEL} --preset 'JetPack 5' \
@@ -162,7 +162,7 @@ RUN apt-get update && apt-get install -y curl ccache \
     && curl -fsSL https://github.com/Kitware/CMake/releases/download/v${CMAKEVERSION}/cmake-${CMAKEVERSION}-linux-$(uname -m).tar.gz | tar xz -C /usr/local --strip-components 1
 COPY CMakeLists.txt CMakePresets.json .
 COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
-ARG PARALLEL
+ARG PARALLEL=8
 RUN --mount=type=cache,target=/root/.ccache \
     cmake --preset 'JetPack 6' \
         && cmake --build --parallel ${PARALLEL} --preset 'JetPack 6' \
