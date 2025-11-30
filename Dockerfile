@@ -109,8 +109,8 @@ RUN cmake --preset 'CUDA 12' -DCMAKE_BUILD_TYPE=Release && \
 FROM base AS go-builder
 WORKDIR /go/src/github.com/ollama/ollama
 
-# Установка ПОЛНОГО Go 1.24.1 (c stdlib, без удаления src)
-RUN curl -fsSL https://golang.org/dl/go1.24.1.linux-amd64.tar.gz \
+# Установка ПОЛНОГО Go 1.24.9 (c stdlib, без удаления src)
+RUN curl -fsSL https://golang.org/dl/go1.24.9.linux-amd64.tar.gz \
     | tar xz -C /usr/local
 
 ENV PATH=/usr/local/go/bin:$PATH
@@ -123,7 +123,7 @@ COPY go.mod go.sum ./
 
 # Обновляем golang.org/x/crypto и yaml.v3, затем чистим зависимости
 RUN go env -w GOPROXY=https://proxy.golang.org,direct && \
-    go get golang.org/x/crypto@v0.45.0 gopkg.in/yaml.v3@v3.0.1 && \
+    go get golang.org/x/crypto@v0.43.0 gopkg.in/yaml.v3@v3.0.1 && \
     go mod tidy && \
     go mod verify && \
     go mod download
