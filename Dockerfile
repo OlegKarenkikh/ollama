@@ -232,7 +232,7 @@ FROM --platform=${TARGETOS}/${TARGETARCH} ubuntu:24.04
 RUN apt-get update \
     && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends ca-certificates libvulkan1 openssl libssl3 \
-    && apt-get upgrade -y openssl libssl3 ca-certificates \
+    && apt-get install -y --only-upgrade tar libpam0g coreutils gnupg libgcrypt20 openssl passwd \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
     && update-ca-certificates
