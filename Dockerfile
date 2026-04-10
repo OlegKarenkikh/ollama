@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # vim: filetype=dockerfile
 
 ARG TARGETOS=linux
@@ -9,6 +10,7 @@ ARG JETPACK5VERSION=r35.4.1
 ARG JETPACK6VERSION=r36.4.0
 ARG CMAKEVERSION=3.31.10
 ARG VULKANVERSION=1.4.321.1
+ARG NINJAVERSION=1.13.2
 
 # ============ БАЗОВЫЕ СТАДИИ ============
 FROM --platform=linux/amd64 rocm/dev-almalinux-8:${ROCMVERSION}-complete AS base-amd64
@@ -26,7 +28,7 @@ ARG VULKANVERSION
 RUN wget https://sdk.lunarg.com/sdk/download/${VULKANVERSION}/linux/vulkansdk-linux-x86_64-${VULKANVERSION}.tar.xz -O /tmp/vulkansdk-linux-x86_64-${VULKANVERSION}.tar.xz \
     && tar xvf /tmp/vulkansdk-linux-x86_64-${VULKANVERSION}.tar.xz \
     && dnf -y install ninja-build \
-    && ln -s /usr/bin/python3 /usr/bin/python \  
+    && ln -s /usr/bin/python3 /usr/bin/python \
     && /${VULKANVERSION}/vulkansdk -j 8 vulkan-headers \
     && /${VULKANVERSION}/vulkansdk -j 8 shaderc \
     && rm -rf /tmp/vulkansdk-linux-x86_64-${VULKANVERSION}.tar.xz
