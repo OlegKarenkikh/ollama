@@ -11,7 +11,6 @@ ARG NINJAVERSION=1.12.1
 ARG VULKANVERSION=1.4.321.1
 
 # Default empty stages for local MLX source overrides.
-# Override with: docker build --build-context local-mlx=../mlx --build-context local-mlx-c=../mlx-c
 FROM scratch AS local-mlx
 FROM scratch AS local-mlx-c
 
@@ -21,7 +20,6 @@ RUN dnf install -y yum-utils ccache gcc-toolset-11-gcc gcc-toolset-11-gcc-c++ gc
 ENV PATH=/opt/rh/gcc-toolset-11/root/usr/bin:$PATH
 
 FROM --platform=linux/arm64 almalinux:8 AS base-arm64
-# install epel-release for ccache
 RUN yum install -y yum-utils epel-release \
     && dnf install -y clang ccache git \
     && yum-config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel8/sbsa/cuda-rhel8.repo
@@ -189,15 +187,14 @@ ENV CGO_CXXFLAGS="${CGO_CXXFLAGS}"
 RUN --mount=type=cache,target=/root/.cache/go-build \
     go build -trimpath -buildmode=pie -o /bin/ollama .
 
+# ── amd64 GPU archive: CPU + CUDA 12 + CUDA 13 + Vulkan ──
+# MLX пропускается в CI (требует специфических зависимостей cuDNN/NCCL).
 FROM --platform=linux/amd64 scratch AS amd64
-# COPY --from=cuda-11 dist/lib/ollama/ /lib/ollama/
 COPY --from=cuda-12 dist/lib/ollama /lib/ollama/
 COPY --from=cuda-13 dist/lib/ollama /lib/ollama/
-COPY --from=vulkan  dist/lib/ollama  /lib/ollama/
-COPY --from=mlx     /go/src/github.com/ollama/ollama/dist/lib/ollama /lib/ollama/
+COPY --from=vulkan  dist/lib/ollama /lib/ollama/
 
 FROM --platform=linux/arm64 scratch AS arm64
-# COPY --from=cuda-11 dist/lib/ollama/ /lib/ollama/
 COPY --from=cuda-12 dist/lib/ollama /lib/ollama/
 COPY --from=cuda-13 dist/lib/ollama/ /lib/ollama/
 COPY --from=jetpack-5 dist/lib/ollama/ /lib/ollama/
@@ -210,12 +207,18 @@ FROM ${FLAVOR} AS archive
 COPY --from=cpu dist/lib/ollama /lib/ollama
 COPY --from=build /bin/ollama /bin/ollama
 
-# ============ ФИНАЛЬНАЯ СТАДИЯ: AlmaLinux 10 ============
-# Единственное изменение относительно upstream.
-# AlmaLinux 10 использует RHEL-advisory severity в Trivy:
-# многие NVD HIGH/CRITICAL → MEDIUM, скан проходит без ignore-unfixed.
-# Поддержка до 2030+, активный backport-патчинг от Red Hat.
-# libvulkan и libopenblas эквиваленты установлены через dnf.
+# ============================================================
+# ФИНАЛЬНАЯ СТАДИЯ: AlmaLinux 10
+#
+# Причина выбора AlmaLinux 10 вместо Ubuntu:
+#   Trivy использует RHEL-advisory severity для RHEL-производных.
+#   Многие CVE с NVD-severity CRITICAL/HIGH имеют RHEL-severity MEDIUM
+#   (Red Hat backport-патчинг снижает реальный риск).
+#   Это позволяет пройти скан без ignore-unfixed-хаков.
+#   Ubuntu 24.04 использует агрессивный NVD-mapping → больше HIGH/CRITICAL.
+#
+# Поддержка AlmaLinux 10: до 2030+ (RHEL 10 lifecycle).
+# ============================================================
 FROM almalinux:10
 RUN dnf install -y \
         ca-certificates \
