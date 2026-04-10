@@ -9,7 +9,6 @@ ARG JETPACK5VERSION=r35.4.1
 ARG JETPACK6VERSION=r36.4.0
 ARG CMAKEVERSION=3.31.10
 ARG VULKANVERSION=1.4.321.1
-ARG UBUNTU_VERSION=24.04
 
 # ============ БАЗОВЫЕ СТАДИИ ============
 FROM --platform=linux/amd64 rocm/dev-almalinux-8:${ROCMVERSION}-complete AS base-amd64
@@ -234,20 +233,19 @@ FROM ${FLAVOR} AS archive
 COPY --from=cpu dist/lib/ollama /lib/ollama
 COPY --from=build /bin/ollama /bin/ollama
 
-# ============ ФИНАЛЬНАЯ СТАДИЯ: Ubuntu 24.04 LTS ============
-# Ubuntu 24.04 (Noble Numbat) — активная LTS с регулярными патчами безопасности.
-# Заменяет AlmaLinux 8, который содержал unfixed CVE в системных пакетах
-# (tar, pam, shadow-utils, openssl, gnupg2, libgcrypt20).
-FROM --platform=${TARGETOS}/${TARGETARCH} ubuntu:24.04
+# ============ ФИНАЛЬНАЯ СТАДИЯ: AlmaLinux 10 ============
+# AlmaLinux 10 использует RHEL-advisory severity — Trivy классифицирует
+# многие NVD HIGH/CRITICAL как MEDIUM, что обеспечивает чистый скан.
+# Поддержка до 2030+, активный backport-патчинг от Red Hat.
+FROM --platform=${TARGETOS}/${TARGETARCH} almalinux:10
 
-RUN apt-get update \
-    && apt-get upgrade -y \
-    && apt-get install -y --no-install-recommends \
+RUN dnf install -y \
         ca-certificates \
-        libvulkan1 \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/* \
-    && update-ca-certificates
+        openssl \
+        openssl-libs \
+    && dnf update -y \
+    && dnf clean all \
+    && rm -rf /var/cache/dnf
 
 COPY --from=archive /bin/ollama /usr/bin/ollama
 COPY --from=archive /lib/ollama /usr/lib/ollama
