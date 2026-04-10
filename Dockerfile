@@ -3,7 +3,7 @@
 
 ARG FLAVOR=${TARGETARCH}
 
-ARG ROCMVERSION=7.2
+ARG ROCMVERSION=7.2.1
 ARG JETPACK5VERSION=r35.4.1
 ARG JETPACK6VERSION=r36.4.0
 ARG CMAKEVERSION=3.31.2
@@ -188,7 +188,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     go build -trimpath -buildmode=pie -o /bin/ollama .
 
 # ── amd64 GPU archive: CPU + CUDA 12 + CUDA 13 + Vulkan ──
-# MLX пропускается в CI (требует специфических зависимостей cuDNN/NCCL).
+# MLX пропускается в CI (требует cuDNN/NCCL — специфических зависимостей).
 FROM --platform=linux/amd64 scratch AS amd64
 COPY --from=cuda-12 dist/lib/ollama /lib/ollama/
 COPY --from=cuda-13 dist/lib/ollama /lib/ollama/
@@ -210,14 +210,10 @@ COPY --from=build /bin/ollama /bin/ollama
 # ============================================================
 # ФИНАЛЬНАЯ СТАДИЯ: AlmaLinux 10
 #
-# Причина выбора AlmaLinux 10 вместо Ubuntu:
-#   Trivy использует RHEL-advisory severity для RHEL-производных.
-#   Многие CVE с NVD-severity CRITICAL/HIGH имеют RHEL-severity MEDIUM
-#   (Red Hat backport-патчинг снижает реальный риск).
-#   Это позволяет пройти скан без ignore-unfixed-хаков.
-#   Ubuntu 24.04 использует агрессивный NVD-mapping → больше HIGH/CRITICAL.
-#
-# Поддержка AlmaLinux 10: до 2030+ (RHEL 10 lifecycle).
+# Trivy использует RHEL-advisory severity для RHEL-производных:
+# многие NVD CRITICAL/HIGH → RHEL MEDIUM (Red Hat backport-патчинг).
+# Ubuntu 24.04 использует агрессивный NVD-mapping → больше HIGH/CRITICAL.
+# AlmaLinux 10: поддержка до 2030+ (RHEL 10 lifecycle).
 # ============================================================
 FROM almalinux:10
 RUN dnf install -y \
