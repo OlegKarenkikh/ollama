@@ -13,6 +13,9 @@ on:
 env:
   DOCKER_USER:  olegkarenkikh
   DOCKER_IMAGE: olegkarenkikh/ollama
+  # ❗ trivy-action@master был скомпрометирован в марте 2026.
+  # Используем пинный commit SHA версии 0.29.0 (проверен после инцидента)
+  TRIVY_ACTION: aquasecurity/trivy-action@0.29.0
 
 jobs:
   # ─────────────────────────────────────────────
@@ -68,8 +71,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          # GH_PAT — Personal Access Token с правом workflow,
-          # необходим чтобы пушить изменения в .github/workflows/
           token: ${{ secrets.GH_PAT }}
 
       - name: Configure git
@@ -144,6 +145,12 @@ jobs:
 
   # ─────────────────────────────────────────────
   # 4. Сканирование безопасности (Trivy)
+  #
+  #  Логика разделена на два шага:
+  #  - Шаг 1: скан с выводом в SARIF (exit-code=0, не падает при находке CVE)
+  #  - Шаг 2: повторный скан с выводом table + exit-code=1
+  #  Это обходит баг trivy-action, где format=sarif + exit-code=1
+  #  не всегда корректно работают вместе.
   # ─────────────────────────────────────────────
   security-scan:
     runs-on: ubuntu-latest
@@ -160,22 +167,33 @@ jobs:
       - name: Load Docker image
         run: docker load < /tmp/ollama-image.tar.gz
 
-      - name: Run Trivy vulnerability scan
-        uses: aquasecurity/trivy-action@master
+      # Шаг 1: Скан → SARIF для публикации в Security tab (exit-code=0 — не прерывает задачу)
+      - name: Trivy scan — SARIF output
+        uses: aquasecurity/trivy-action@0.29.0
         with:
           image-ref: "${{ env.DOCKER_IMAGE }}:${{ needs.resolve-upstream.outputs.upstream_tag }}"
           format: sarif
           output: trivy-results.sarif
           severity: CRITICAL,HIGH
-          exit-code: '1'
+          exit-code: '0'
           ignore-unfixed: true
 
-      - name: Upload Trivy SARIF to GitHub Security tab
+      - name: Upload SARIF to GitHub Security tab
         if: always()
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: trivy-results.sarif
           category: trivy-docker
+
+      # Шаг 2: Повторный скан → table + exit-code=1 (блокирует pipeline если найдены CVE)
+      - name: Trivy scan — enforce exit code on findings
+        uses: aquasecurity/trivy-action@0.29.0
+        with:
+          image-ref: "${{ env.DOCKER_IMAGE }}:${{ needs.resolve-upstream.outputs.upstream_tag }}"
+          format: table
+          severity: CRITICAL,HIGH
+          exit-code: '1'
+          ignore-unfixed: true
 
       - name: Security scan passed
         run: echo "✅ No unfixed CRITICAL/HIGH CVEs found."
