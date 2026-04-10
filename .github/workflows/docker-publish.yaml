@@ -48,7 +48,6 @@ jobs:
         id: check
         run: |
           TAG="${{ steps.tag.outputs.tag }}"
-          # Считаем синхронизированным если есть наш локальный тег ИЛИ сам upstream-тег
           if git tag --list | grep -qxE "${TAG}(-local)?" ; then
             echo "already_synced=true" >> "$GITHUB_OUTPUT"
             echo "Tag ${TAG} already present — skipping sync."
@@ -101,13 +100,11 @@ jobs:
           git push origin "${TAG}-local" --force
 
   # ─────────────────────────────────────────────
-  # 3. Сборка Docker образа (CPU-only, без CUDA/ROCm)
+  # 3. Сборка Docker образа
   #
-  #  Полный multi-stage Dockerfile требует ROCm/CUDA базовых образов
-  #  (10+ GB) и GPU-тулчейнов — нереалистично для GitHub Actions runners.
-  #  Собираем CPU-only образ: target=archive с --build-arg FLAVOR=cpu,
-  #  используя только стадии: base-amd64 → base → cpu → build → archive → final.
-  #  Итоговый образ полнофункционален для CPU-инференса.
+  #  Используем Dockerfile.secure (AlmaLinux 8 финальный stage) —
+  #  подтверждённая рабочая конфигурация сборки.
+  #  CPU-only: пропускаем ROCm/CUDA/Jetpack/MLX стадии.
   # ─────────────────────────────────────────────
   docker-build:
     runs-on: ubuntu-latest
@@ -124,13 +121,11 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build image (CPU-only, local cache, without push)
+      - name: Build image (Dockerfile.secure / AlmaLinux 8, CPU-only)
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: Dockerfile
-          # Собираем только CPU-стадии: пропускаем ROCm/CUDA/Jetpack/MLX
-          # target=archive + FLAVOR=cpu → финальный образ с CPU-бэкендом
+          file: Dockerfile.secure
           build-args: |
             FLAVOR=cpu
           push: false
@@ -138,8 +133,6 @@ jobs:
           tags: |
             ${{ env.DOCKER_IMAGE }}:${{ needs.resolve-upstream.outputs.upstream_tag }}
             ${{ env.DOCKER_IMAGE }}:latest
-          # Таймаут 90 минут — компиляция CPU-бэкенда занимает ~40 мин
-          # cache-from/to через GHA для ускорения повторных сборок
           cache-from: type=gha
           cache-to:   type=gha,mode=max
 
@@ -163,11 +156,6 @@ jobs:
 
   # ─────────────────────────────────────────────
   # 4. Сканирование безопасности (Trivy)
-  #
-  #  SHA 57a97c7e = v0.35.0, верифицирован Aqua Security.
-  #  ignore-unfixed:true — пропускаем CVE без доступного фикса
-  #  (типично для go stdlib в транзитивных зависимостях).
-  #  Блокируем только CRITICAL/HIGH у которых есть исправление.
   # ─────────────────────────────────────────────
   security-scan:
     runs-on: ubuntu-latest
@@ -184,7 +172,6 @@ jobs:
       - name: Load Docker image
         run: docker load < /tmp/ollama-image.tar.gz
 
-      # Шаг 1: SARIF → GitHub Security tab (не прерывает при CVE)
       - name: Trivy scan — SARIF output
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
         with:
@@ -202,7 +189,6 @@ jobs:
           sarif_file: trivy-results.sarif
           category: trivy-docker
 
-      # Шаг 2: table + exit-code=1 → блокирует если найдены fixable CVE
       - name: Trivy scan — enforce exit code on fixable findings
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
         with:
@@ -243,7 +229,6 @@ jobs:
         env:
           TAG: ${{ needs.resolve-upstream.outputs.upstream_tag }}
         run: |
-          # Убеждаемся что оба тега загружены
           docker tag "${{ env.DOCKER_IMAGE }}:${TAG}" "${{ env.DOCKER_IMAGE }}:latest" 2>/dev/null || true
           docker push "${{ env.DOCKER_IMAGE }}:${TAG}"
           docker push "${{ env.DOCKER_IMAGE }}:latest"
@@ -291,7 +276,6 @@ jobs:
           echo "Waiting for ollama HTTP on :11434 ..."
           for i in $(seq 1 30); do
             HTTP_CODE=$(curl -so /dev/null -w '%{http_code}' http://localhost:11434/ 2>/dev/null || echo "000")
-            # Ollama возвращает 200 на GET / со строкой "Ollama is running"
             if [ "$HTTP_CODE" = "200" ]; then
               echo "✅ HTTP 200 received on attempt $i"
               docker stop ollama-test || true
