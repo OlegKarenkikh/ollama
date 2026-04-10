@@ -20,6 +20,8 @@ jobs:
   # ─────────────────────────────────────────────
   resolve-upstream:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       upstream_tag:   ${{ steps.tag.outputs.tag }}
       already_synced: ${{ steps.check.outputs.already_synced }}
@@ -60,10 +62,14 @@ jobs:
     runs-on: ubuntu-latest
     needs: resolve-upstream
     if: needs.resolve-upstream.outputs.already_synced == 'false'
+    # Права на запись в репозиторий (пуш в main + теги)
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          # Используем встроенный GITHUB_TOKEN с правами write
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Configure git
@@ -101,6 +107,8 @@ jobs:
   docker-build:
     runs-on: ubuntu-latest
     needs: [resolve-upstream, sync-upstream]
+    permissions:
+      contents: read
     if: |
       always() &&
       (needs.sync-upstream.result == 'success' || needs.sync-upstream.result == 'skipped') &&
@@ -178,6 +186,8 @@ jobs:
   docker-push:
     runs-on: ubuntu-latest
     needs: [resolve-upstream, docker-build, security-scan]
+    permissions:
+      contents: read
     if: needs.security-scan.result == 'success'
     steps:
       - uses: actions/download-artifact@v4
@@ -208,6 +218,8 @@ jobs:
   smoke-test:
     runs-on: ubuntu-latest
     needs: [resolve-upstream, docker-push]
+    permissions:
+      contents: none
     steps:
       - name: Login to Docker Hub
         uses: docker/login-action@v3
@@ -259,6 +271,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: [resolve-upstream, security-scan, smoke-test]
     if: always()
+    permissions:
+      contents: none
     steps:
       - name: Evaluate result
         env:
