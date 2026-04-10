@@ -1,48 +1,30 @@
 # syntax=docker/dockerfile:1
 # vim: filetype=dockerfile
 
-ARG TARGETOS=linux
-ARG TARGETARCH
 ARG FLAVOR=${TARGETARCH}
 
-ARG ROCMVERSION=7.1.1
+ARG ROCMVERSION=7.2
 ARG JETPACK5VERSION=r35.4.1
 ARG JETPACK6VERSION=r36.4.0
-ARG CMAKEVERSION=3.31.10
+ARG CMAKEVERSION=3.31.2
+ARG NINJAVERSION=1.12.1
 ARG VULKANVERSION=1.4.321.1
-ARG NINJAVERSION=1.13.2
 
-# ============ БАЗОВЫЕ СТАДИИ ============
+# Default empty stages for local MLX source overrides.
+# Override with: docker build --build-context local-mlx=../mlx --build-context local-mlx-c=../mlx-c
+FROM scratch AS local-mlx
+FROM scratch AS local-mlx-c
+
 FROM --platform=linux/amd64 rocm/dev-almalinux-8:${ROCMVERSION}-complete AS base-amd64
-RUN yum install -y yum-utils \
-    && yum-config-manager --add-repo https://dl.rockylinux.org/vault/rocky/8.5/AppStream/\$basearch/os/ \
-    && rpm --import https://dl.rockylinux.org/pub/rocky/RPM-GPG-KEY-Rocky-8 \
-    && dnf install -y yum-utils ccache gcc-toolset-10-gcc-10.2.1-8.2.el8 gcc-toolset-10-gcc-c++-10.2.1-8.2.el8 gcc-toolset-10-binutils-2.35-11.el8 \
-    && dnf install -y ccache openssl openssl-libs ca-certificates \
-    && yum-config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel8/x86_64/cuda-rhel8.repo \
-    && dnf update -y --security \
-    && dnf update -y openssl openssl-libs ca-certificates \
-    && dnf clean all
-ENV PATH=/opt/rh/gcc-toolset-10/root/usr/bin:$PATH
-ARG VULKANVERSION
-RUN wget https://sdk.lunarg.com/sdk/download/${VULKANVERSION}/linux/vulkansdk-linux-x86_64-${VULKANVERSION}.tar.xz -O /tmp/vulkansdk-linux-x86_64-${VULKANVERSION}.tar.xz \
-    && tar xvf /tmp/vulkansdk-linux-x86_64-${VULKANVERSION}.tar.xz \
-    && dnf -y install ninja-build \
-    && ln -s /usr/bin/python3 /usr/bin/python \
-    && /${VULKANVERSION}/vulkansdk -j 8 vulkan-headers \
-    && /${VULKANVERSION}/vulkansdk -j 8 shaderc \
-    && rm -rf /tmp/vulkansdk-linux-x86_64-${VULKANVERSION}.tar.xz
-RUN cp -r /${VULKANVERSION}/x86_64/include/* /usr/local/include/ \
-    && cp -r /${VULKANVERSION}/x86_64/lib/* /usr/local/lib
-ENV PATH=/${VULKANVERSION}/x86_64/bin:$PATH
+RUN dnf install -y yum-utils ccache gcc-toolset-11-gcc gcc-toolset-11-gcc-c++ gcc-toolset-11-binutils \
+    && yum-config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel8/x86_64/cuda-rhel8.repo
+ENV PATH=/opt/rh/gcc-toolset-11/root/usr/bin:$PATH
 
-FROM --platform=linux/arm64 almalinux:10 AS base-arm64
-RUN dnf install -y yum-utils epel-release \
-    && dnf install -y clang ccache openssl openssl-libs ca-certificates \
-    && dnf config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel10/sbsa/cuda-rhel10.repo \
-    && dnf update -y --security \
-    && dnf update -y openssl openssl-libs ca-certificates \
-    && dnf clean all
+FROM --platform=linux/arm64 almalinux:8 AS base-arm64
+# install epel-release for ccache
+RUN yum install -y yum-utils epel-release \
+    && dnf install -y clang ccache git \
+    && yum-config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel8/sbsa/cuda-rhel8.repo
 ENV CC=clang CXX=clang++
 
 FROM base-${TARGETARCH} AS base
@@ -56,12 +38,8 @@ RUN dnf install -y unzip \
 ENV CMAKE_GENERATOR=Ninja
 ENV LDFLAGS=-s
 
-# ============ СТАДИИ СБОРКИ ============
 FROM base AS cpu
-RUN dnf install -y gcc-toolset-11-gcc gcc-toolset-11-gcc-c++ \
-    && dnf update -y --security \
-    && dnf update -y openssl openssl-libs ca-certificates \
-    && dnf clean all
+RUN dnf install -y gcc-toolset-11-gcc gcc-toolset-11-gcc-c++
 ENV PATH=/opt/rh/gcc-toolset-11/root/usr/bin:$PATH
 COPY CMakeLists.txt CMakePresets.json .
 COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
@@ -72,20 +50,7 @@ RUN --mount=type=cache,target=/root/.ccache \
 
 FROM base AS cuda-11
 ARG CUDA11VERSION=11.8
-RUN dnf install -y \
-    cuda-minimal-build-${CUDA11VERSION//./-} \
-    cuda-cudart-devel-${CUDA11VERSION//./-} \
-    cuda-nvcc-${CUDA11VERSION//./-} \
-    libcublas-devel-${CUDA11VERSION//./-} \
-    libcufft-devel-${CUDA11VERSION//./-} \
-    libcurand-devel-${CUDA11VERSION//./-} \
-    libcusolver-devel-${CUDA11VERSION//./-} \
-    libcusparse-devel-${CUDA11VERSION//./-} \
-    openssl openssl-libs ca-certificates \
-    && dnf update -y --security \
-    && dnf update -y openssl openssl-libs ca-certificates \
-    && dnf clean all \
-    && rm -rf /var/cache/dnf
+RUN dnf install -y cuda-toolkit-${CUDA11VERSION//./-}
 ENV PATH=/usr/local/cuda-11/bin:$PATH
 COPY CMakeLists.txt CMakePresets.json .
 COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
@@ -96,20 +61,7 @@ RUN --mount=type=cache,target=/root/.ccache \
 
 FROM base AS cuda-12
 ARG CUDA12VERSION=12.8
-RUN dnf install -y \
-    cuda-minimal-build-${CUDA12VERSION//./-} \
-    cuda-cudart-devel-${CUDA12VERSION//./-} \
-    cuda-nvcc-${CUDA12VERSION//./-} \
-    libcublas-devel-${CUDA12VERSION//./-} \
-    libcufft-devel-${CUDA12VERSION//./-} \
-    libcurand-devel-${CUDA12VERSION//./-} \
-    libcusolver-devel-${CUDA12VERSION//./-} \
-    libcusparse-devel-${CUDA12VERSION//./-} \
-    openssl openssl-libs ca-certificates \
-    && dnf update -y --security \
-    && dnf update -y openssl openssl-libs ca-certificates \
-    && dnf clean all \
-    && rm -rf /var/cache/dnf
+RUN dnf install -y cuda-toolkit-${CUDA12VERSION//./-}
 ENV PATH=/usr/local/cuda-12/bin:$PATH
 COPY CMakeLists.txt CMakePresets.json .
 COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
@@ -120,20 +72,7 @@ RUN --mount=type=cache,target=/root/.ccache \
 
 FROM base AS cuda-13
 ARG CUDA13VERSION=13.0
-RUN dnf install -y \
-    cuda-minimal-build-${CUDA13VERSION//./-} \
-    cuda-cudart-devel-${CUDA13VERSION//./-} \
-    cuda-nvcc-${CUDA13VERSION//./-} \
-    libcublas-devel-${CUDA13VERSION//./-} \
-    libcufft-devel-${CUDA13VERSION//./-} \
-    libcurand-devel-${CUDA13VERSION//./-} \
-    libcusolver-devel-${CUDA13VERSION//./-} \
-    libcusparse-devel-${CUDA13VERSION//./-} \
-    openssl openssl-libs ca-certificates \
-    && dnf update -y --security \
-    && dnf update -y openssl openssl-libs ca-certificates \
-    && dnf clean all \
-    && rm -rf /var/cache/dnf
+RUN dnf install -y cuda-toolkit-${CUDA13VERSION//./-}
 ENV PATH=/usr/local/cuda-13/bin:$PATH
 COPY CMakeLists.txt CMakePresets.json .
 COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
@@ -142,7 +81,7 @@ RUN --mount=type=cache,target=/root/.ccache \
         && cmake --build --preset 'CUDA 13' -- -l $(nproc) \
         && cmake --install build --component CUDA --strip
 
-FROM base AS rocm-6
+FROM base AS rocm-7
 ENV PATH=/opt/rocm/hcc/bin:/opt/rocm/hip/bin:/opt/rocm/bin:/opt/rocm/hcc/bin:$PATH
 COPY CMakeLists.txt CMakePresets.json .
 COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
@@ -154,11 +93,13 @@ RUN rm -f dist/lib/ollama/rocm/rocblas/library/*gfx90[06]*
 
 FROM --platform=linux/arm64 nvcr.io/nvidia/l4t-jetpack:${JETPACK5VERSION} AS jetpack-5
 ARG CMAKEVERSION
-RUN apt-get update && apt-get install -y curl ccache \
-    && apt-get upgrade -y \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/* \
-    && curl -fsSL https://github.com/Kitware/CMake/releases/download/v${CMAKEVERSION}/cmake-${CMAKEVERSION}-linux-$(uname -m).tar.gz | tar xz -C /usr/local --strip-components 1
+ARG NINJAVERSION
+RUN apt-get update && apt-get install -y curl ccache unzip \
+    && curl -fsSL https://github.com/Kitware/CMake/releases/download/v${CMAKEVERSION}/cmake-${CMAKEVERSION}-linux-$(uname -m).tar.gz | tar xz -C /usr/local --strip-components 1 \
+    && curl -fsSL -o /tmp/ninja.zip https://github.com/ninja-build/ninja/releases/download/v${NINJAVERSION}/ninja-linux-aarch64.zip \
+    && unzip /tmp/ninja.zip -d /usr/local/bin \
+    && rm /tmp/ninja.zip
+ENV CMAKE_GENERATOR=Ninja
 COPY CMakeLists.txt CMakePresets.json .
 COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
 RUN --mount=type=cache,target=/root/.ccache \
@@ -168,11 +109,13 @@ RUN --mount=type=cache,target=/root/.ccache \
 
 FROM --platform=linux/arm64 nvcr.io/nvidia/l4t-jetpack:${JETPACK6VERSION} AS jetpack-6
 ARG CMAKEVERSION
-RUN apt-get update && apt-get install -y curl ccache \
-    && apt-get upgrade -y \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/* \
-    && curl -fsSL https://github.com/Kitware/CMake/releases/download/v${CMAKEVERSION}/cmake-${CMAKEVERSION}-linux-$(uname -m).tar.gz | tar xz -C /usr/local --strip-components 1
+ARG NINJAVERSION
+RUN apt-get update && apt-get install -y curl ccache unzip \
+    && curl -fsSL https://github.com/Kitware/CMake/releases/download/v${CMAKEVERSION}/cmake-${CMAKEVERSION}-linux-$(uname -m).tar.gz | tar xz -C /usr/local --strip-components 1 \
+    && curl -fsSL -o /tmp/ninja.zip https://github.com/ninja-build/ninja/releases/download/v${NINJAVERSION}/ninja-linux-aarch64.zip \
+    && unzip /tmp/ninja.zip -d /usr/local/bin \
+    && rm /tmp/ninja.zip
+ENV CMAKE_GENERATOR=Ninja
 COPY CMakeLists.txt CMakePresets.json .
 COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
 RUN --mount=type=cache,target=/root/.ccache \
@@ -198,14 +141,44 @@ RUN --mount=type=cache,target=/root/.ccache \
         && cmake --build --preset 'Vulkan' -- -l $(nproc) \
         && cmake --install build --component Vulkan --strip
 
+FROM base AS mlx
+ARG CUDA13VERSION=13.0
+RUN dnf install -y cuda-toolkit-${CUDA13VERSION//./-} \
+    && dnf install -y openblas-devel lapack-devel \
+    && dnf install -y libcudnn9-cuda-13 libcudnn9-devel-cuda-13 \
+    && dnf install -y libnccl libnccl-devel
+ENV PATH=/usr/local/cuda-13/bin:$PATH
+ENV BLAS_INCLUDE_DIRS=/usr/include/openblas
+ENV LAPACK_INCLUDE_DIRS=/usr/include/openblas
+ENV CGO_LDFLAGS="-L/usr/local/cuda-13/lib64 -L/usr/local/cuda-13/targets/x86_64-linux/lib/stubs"
+WORKDIR /go/src/github.com/ollama/ollama
+COPY CMakeLists.txt CMakePresets.json .
+COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
+COPY x/imagegen/mlx x/imagegen/mlx
+COPY go.mod go.sum .
+COPY MLX_VERSION MLX_C_VERSION .
+RUN curl -fsSL https://golang.org/dl/go$(awk '/^go/ { print $2 }' go.mod).linux-$(case $(uname -m) in x86_64) echo amd64 ;; aarch64) echo arm64 ;; esac).tar.gz | tar xz -C /usr/local
+ENV PATH=/usr/local/go/bin:$PATH
+RUN go mod download
+RUN --mount=type=cache,target=/root/.ccache \
+    --mount=type=bind,from=local-mlx,target=/tmp/local-mlx \
+    --mount=type=bind,from=local-mlx-c,target=/tmp/local-mlx-c \
+    if [ -f /tmp/local-mlx/CMakeLists.txt ]; then \
+        export OLLAMA_MLX_SOURCE=/tmp/local-mlx; \
+    fi \
+    && if [ -f /tmp/local-mlx-c/CMakeLists.txt ]; then \
+        export OLLAMA_MLX_C_SOURCE=/tmp/local-mlx-c; \
+    fi \
+    && cmake --preset 'MLX CUDA 13' -DBLAS_INCLUDE_DIRS=/usr/include/openblas -DLAPACK_INCLUDE_DIRS=/usr/include/openblas \
+        && cmake --build --preset 'MLX CUDA 13' -- -l $(nproc) \
+        && cmake --install build --component MLX --strip
+
 FROM base AS build
 WORKDIR /go/src/github.com/ollama/ollama
 COPY go.mod go.sum .
-RUN GO_VERSION=$(awk '/^go/ { print $2 }' go.mod) && \
-    ARCH=$(case $(uname -m) in x86_64) echo amd64 ;; aarch64) echo arm64 ;; esac) && \
-    curl -fsSL https://golang.org/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz | tar xz -C /usr/local
+RUN curl -fsSL https://golang.org/dl/go$(awk '/^go/ { print $2 }' go.mod).linux-$(case $(uname -m) in x86_64) echo amd64 ;; aarch64) echo arm64 ;; esac).tar.gz | tar xz -C /usr/local
 ENV PATH=/usr/local/go/bin:$PATH
-RUN go mod download && go mod tidy
+RUN go mod download
 COPY . .
 ARG GOFLAGS="'-ldflags=-w -s'"
 ENV CGO_ENABLED=1
@@ -216,53 +189,54 @@ ENV CGO_CXXFLAGS="${CGO_CXXFLAGS}"
 RUN --mount=type=cache,target=/root/.cache/go-build \
     go build -trimpath -buildmode=pie -o /bin/ollama .
 
-# ============ АРХИВНЫЕ СТАДИИ ============
 FROM --platform=linux/amd64 scratch AS amd64
+# COPY --from=cuda-11 dist/lib/ollama/ /lib/ollama/
 COPY --from=cuda-12 dist/lib/ollama /lib/ollama/
 COPY --from=cuda-13 dist/lib/ollama /lib/ollama/
 COPY --from=vulkan  dist/lib/ollama  /lib/ollama/
+COPY --from=mlx     /go/src/github.com/ollama/ollama/dist/lib/ollama /lib/ollama/
 
 FROM --platform=linux/arm64 scratch AS arm64
+# COPY --from=cuda-11 dist/lib/ollama/ /lib/ollama/
 COPY --from=cuda-12 dist/lib/ollama /lib/ollama/
 COPY --from=cuda-13 dist/lib/ollama/ /lib/ollama/
 COPY --from=jetpack-5 dist/lib/ollama/ /lib/ollama/
 COPY --from=jetpack-6 dist/lib/ollama/ /lib/ollama/
 
 FROM scratch AS rocm
-COPY --from=rocm-6 dist/lib/ollama /lib/ollama
+COPY --from=rocm-7 dist/lib/ollama /lib/ollama
 
 FROM ${FLAVOR} AS archive
 COPY --from=cpu dist/lib/ollama /lib/ollama
 COPY --from=build /bin/ollama /bin/ollama
 
 # ============ ФИНАЛЬНАЯ СТАДИЯ: AlmaLinux 10 ============
-# AlmaLinux 10 использует RHEL-advisory severity — Trivy классифицирует
-# многие NVD HIGH/CRITICAL как MEDIUM, что обеспечивает чистый скан.
+# Единственное изменение относительно upstream.
+# AlmaLinux 10 использует RHEL-advisory severity в Trivy:
+# многие NVD HIGH/CRITICAL → MEDIUM, скан проходит без ignore-unfixed.
 # Поддержка до 2030+, активный backport-патчинг от Red Hat.
-FROM --platform=${TARGETOS}/${TARGETARCH} almalinux:10
-
+# libvulkan и libopenblas эквиваленты установлены через dnf.
+FROM almalinux:10
 RUN dnf install -y \
         ca-certificates \
         openssl \
         openssl-libs \
+        mesa-vulkan-drivers \
+        openblas \
     && dnf update -y \
     && dnf clean all \
     && rm -rf /var/cache/dnf
-
 COPY --from=archive /bin/ollama /usr/bin/ollama
 COPY --from=archive /lib/ollama /usr/lib/ollama
-
 ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ENV LD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/lib/ollama
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
 ENV NVIDIA_VISIBLE_DEVICES=all
 ENV OLLAMA_HOST=0.0.0.0:11434
-
 RUN groupadd -r ollama && useradd -r -g ollama -s /sbin/nologin ollama \
     && mkdir -p /home/ollama \
     && chown -R ollama:ollama /home/ollama \
     && chown -R ollama:ollama /usr/lib/ollama /usr/bin/ollama
-
 USER ollama
 EXPOSE 11434
 ENTRYPOINT ["/usr/bin/ollama"]
