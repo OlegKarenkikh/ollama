@@ -11,7 +11,7 @@ ARG CMAKEVERSION=3.31.10
 ARG VULKANVERSION=1.4.321.1
 ARG UBUNTU_VERSION=24.04
 
-# ============ БАЗОВЫЕ СТАДИИ (БЕЗ ИЗМЕНЕНИЙ) ============
+# ============ БАЗОВЫЕ СТАДИИ ============
 FROM --platform=linux/amd64 rocm/dev-almalinux-8:${ROCMVERSION}-complete AS base-amd64
 RUN yum install -y yum-utils \
     && yum-config-manager --add-repo https://dl.rockylinux.org/vault/rocky/8.5/AppStream/\$basearch/os/ \
@@ -55,7 +55,7 @@ RUN dnf install -y unzip \
 ENV CMAKE_GENERATOR=Ninja
 ENV LDFLAGS=-s
 
-# ============ СТАДИИ СБОРКИ (БЕЗ ИЗМЕНЕНИЙ) ============
+# ============ СТАДИИ СБОРКИ ============
 FROM base AS cpu
 RUN dnf install -y gcc-toolset-11-gcc gcc-toolset-11-gcc-c++ \
     && dnf update -y --security \
@@ -215,12 +215,11 @@ ENV CGO_CXXFLAGS="${CGO_CXXFLAGS}"
 RUN --mount=type=cache,target=/root/.cache/go-build \
     go build -trimpath -buildmode=pie -o /bin/ollama .
 
-# ============ ✅ ИСПРАВЛЕННЫЕ СТАДИИ ============
+# ============ АРХИВНЫЕ СТАДИИ ============
 FROM --platform=linux/amd64 scratch AS amd64
 COPY --from=cuda-12 dist/lib/ollama /lib/ollama/
 COPY --from=cuda-13 dist/lib/ollama /lib/ollama/
 COPY --from=vulkan  dist/lib/ollama  /lib/ollama/
-COPY --from=mlx     /go/src/github.com/ollama/ollama/dist/lib/ollama /lib/ollama/
 
 FROM --platform=linux/arm64 scratch AS arm64
 COPY --from=cuda-12 dist/lib/ollama /lib/ollama/
@@ -229,46 +228,36 @@ COPY --from=jetpack-5 dist/lib/ollama/ /lib/ollama/
 COPY --from=jetpack-6 dist/lib/ollama/ /lib/ollama/
 
 FROM scratch AS rocm
-COPY --from=rocm-7 dist/lib/ollama /lib/ollama
+COPY --from=rocm-6 dist/lib/ollama /lib/ollama
 
-# ✅ ИСПРАВЛЕННАЯ archive стадия (без RUN, только COPY)
 FROM ${FLAVOR} AS archive
 COPY --from=cpu dist/lib/ollama /lib/ollama
 COPY --from=build /bin/ollama /bin/ollama
 
-# ============ ✅ ФИНАЛЬНАЯ СТАДИЯ: AlmaLinux 8 (OpenSSL 1.1.x) ============
-# ✅ ФИНАЛЬНАЯ СТАДИЯ: AlmaLinux 8 (БЕЗ PYTHON)
-FROM --platform=${TARGETOS}/${TARGETARCH} almalinux:8
+# ============ ФИНАЛЬНАЯ СТАДИЯ: Ubuntu 24.04 LTS ============
+# Ubuntu 24.04 (Noble Numbat) — активная LTS с регулярными патчами безопасности.
+# Заменяет AlmaLinux 8, который содержал unfixed CVE в системных пакетах
+# (tar, pam, shadow-utils, openssl, gnupg2, libgcrypt20).
+FROM --platform=${TARGETOS}/${TARGETARCH} ubuntu:24.04
 
-# ✅ Минимальные зависимости (БЕЗ Python/setuptools)
-RUN dnf install -y \
+RUN apt-get update \
+    && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends \
         ca-certificates \
-        openssl \
-        openssl-libs \
-        glibc \
-        libgcrypt \
-        gnupg2 \
-        tar \
-        shadow-utils \
-    && dnf update -y \
-    && dnf clean all \
-    && rm -rf /var/cache/dnf \
-    # ✅ Удаляем Python и setuptools, если установлены
-    && (dnf remove -y python3-setuptools python3-pip python3 || true) \
-    && rm -rf /usr/lib/python* /usr/local/lib/python*
+        libvulkan1 \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* \
+    && update-ca-certificates
 
-# ✅ КОПИРУЕМ ТОЛЬКО необходимое (без Python/setuptools из /bin)
 COPY --from=archive /bin/ollama /usr/bin/ollama
-ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 COPY --from=archive /lib/ollama /usr/lib/ollama
 
-# GPU переменные окружения
+ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ENV LD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/lib/ollama
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
 ENV NVIDIA_VISIBLE_DEVICES=all
 ENV OLLAMA_HOST=0.0.0.0:11434
 
-# Non-root пользователь
 RUN groupadd -r ollama && useradd -r -g ollama -s /sbin/nologin ollama \
     && mkdir -p /home/ollama \
     && chown -R ollama:ollama /home/ollama \

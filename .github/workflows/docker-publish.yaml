@@ -143,16 +143,16 @@ jobs:
   # ─────────────────────────────────────────────
   # 4. Сканирование безопасности (Trivy)
   #
-  #  ❗ trivy-action@master и все теги до v0.35.0 были скомпрометированы
-  #     в supply chain атаке (март 2026, CVE-2026-33634).
-  #     Используем ТОЛЬКО полный commit SHA — единственная иммутабельная ссылка.
-  #     SHA 57a97c7e = v0.35.0, верифицирован Aqua Security.
-  #     Ref: https://www.aquasec.com/blog/trivy-supply-chain-attack-what-you-need-to-know/
+  #  Используем полный commit SHA вместо тега — единственная иммутабельная ссылка.
+  #  SHA 57a97c7e = v0.35.0, верифицирован Aqua Security.
+  #
+  #  ignore-unfixed УБРАН — pipeline блокируется на ЛЮБОМ CRITICAL/HIGH CVE,
+  #  для которого существует фикс. Это возможно благодаря переходу финальной
+  #  стадии с AlmaLinux 8 на Ubuntu 24.04 LTS (все пакеты имеют патчи).
   #
   #  Логика разделена на два шага:
   #  - Шаг 1: скан → SARIF (exit-code=0) → GitHub Security tab
   #  - Шаг 2: скан → table + exit-code=1 → блокирует pipeline при CVE
-  #  Это обходит баг trivy-action: format=sarif + exit-code=1 не работают совместно.
   # ─────────────────────────────────────────────
   security-scan:
     runs-on: ubuntu-latest
@@ -172,7 +172,7 @@ jobs:
       # Шаг 1: SARIF → GitHub Security tab (не прерывает при CVE)
       - name: Trivy scan — SARIF output
         # ✅ Pinned to immutable commit SHA (v0.35.0, verified safe)
-        # ⚠️  DO NOT change to a mutable tag — tags can be force-pushed by attackers
+        # ⚠️  DO NOT change to a mutable tag
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
         with:
           image-ref: "${{ env.DOCKER_IMAGE }}:${{ needs.resolve-upstream.outputs.upstream_tag }}"
@@ -180,7 +180,6 @@ jobs:
           output: trivy-results.sarif
           severity: CRITICAL,HIGH
           exit-code: '0'
-          ignore-unfixed: true
 
       - name: Upload SARIF to GitHub Security tab
         if: always()
@@ -198,10 +197,9 @@ jobs:
           format: table
           severity: CRITICAL,HIGH
           exit-code: '1'
-          ignore-unfixed: true
 
       - name: Security scan passed
-        run: echo "✅ No unfixed CRITICAL/HIGH CVEs found."
+        run: echo "✅ No CRITICAL/HIGH CVEs found."
 
   # ─────────────────────────────────────────────
   # 5. Публикация на Docker Hub
@@ -255,7 +253,7 @@ jobs:
           TAG: ${{ needs.resolve-upstream.outputs.upstream_tag }}
         run: |
           docker pull "${{ env.DOCKER_IMAGE }}:${TAG}"
-          echo "✅ Pull from Docker Hub successful."
+          echo "✅ Pull from Docker Hub: ${{ env.DOCKER_IMAGE }}:${TAG}"
 
       - name: Smoke test — ollama version
         env:
