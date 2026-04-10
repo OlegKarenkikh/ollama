@@ -13,9 +13,6 @@ on:
 env:
   DOCKER_USER:  olegkarenkikh
   DOCKER_IMAGE: olegkarenkikh/ollama
-  # ❗ trivy-action@master был скомпрометирован в марте 2026.
-  # Используем пинный commit SHA версии 0.29.0 (проверен после инцидента)
-  TRIVY_ACTION: aquasecurity/trivy-action@0.29.0
 
 jobs:
   # ─────────────────────────────────────────────
@@ -146,11 +143,16 @@ jobs:
   # ─────────────────────────────────────────────
   # 4. Сканирование безопасности (Trivy)
   #
+  #  ❗ trivy-action@master и все теги до v0.35.0 были скомпрометированы
+  #     в supply chain атаке (март 2026, CVE-2026-33634).
+  #     Используем ТОЛЬКО полный commit SHA — единственная иммутабельная ссылка.
+  #     SHA 57a97c7e = v0.35.0, верифицирован Aqua Security.
+  #     Ref: https://www.aquasec.com/blog/trivy-supply-chain-attack-what-you-need-to-know/
+  #
   #  Логика разделена на два шага:
-  #  - Шаг 1: скан с выводом в SARIF (exit-code=0, не падает при находке CVE)
-  #  - Шаг 2: повторный скан с выводом table + exit-code=1
-  #  Это обходит баг trivy-action, где format=sarif + exit-code=1
-  #  не всегда корректно работают вместе.
+  #  - Шаг 1: скан → SARIF (exit-code=0) → GitHub Security tab
+  #  - Шаг 2: скан → table + exit-code=1 → блокирует pipeline при CVE
+  #  Это обходит баг trivy-action: format=sarif + exit-code=1 не работают совместно.
   # ─────────────────────────────────────────────
   security-scan:
     runs-on: ubuntu-latest
@@ -167,9 +169,11 @@ jobs:
       - name: Load Docker image
         run: docker load < /tmp/ollama-image.tar.gz
 
-      # Шаг 1: Скан → SARIF для публикации в Security tab (exit-code=0 — не прерывает задачу)
+      # Шаг 1: SARIF → GitHub Security tab (не прерывает при CVE)
       - name: Trivy scan — SARIF output
-        uses: aquasecurity/trivy-action@0.29.0
+        # ✅ Pinned to immutable commit SHA (v0.35.0, verified safe)
+        # ⚠️  DO NOT change to a mutable tag — tags can be force-pushed by attackers
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
         with:
           image-ref: "${{ env.DOCKER_IMAGE }}:${{ needs.resolve-upstream.outputs.upstream_tag }}"
           format: sarif
@@ -185,9 +189,10 @@ jobs:
           sarif_file: trivy-results.sarif
           category: trivy-docker
 
-      # Шаг 2: Повторный скан → table + exit-code=1 (блокирует pipeline если найдены CVE)
+      # Шаг 2: table + exit-code=1 → блокирует pipeline если найдены CVE
       - name: Trivy scan — enforce exit code on findings
-        uses: aquasecurity/trivy-action@0.29.0
+        # ✅ Pinned to immutable commit SHA (v0.35.0, verified safe)
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
         with:
           image-ref: "${{ env.DOCKER_IMAGE }}:${{ needs.resolve-upstream.outputs.upstream_tag }}"
           format: table
