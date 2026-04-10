@@ -3,7 +3,6 @@
 ARG TARGETOS=linux
 ARG TARGETARCH
 ARG FLAVOR=${TARGETARCH}
-ARG PARALLEL=8
 
 ARG ROCMVERSION=7.1.1
 ARG JETPACK5VERSION=r35.4.1
@@ -47,7 +46,13 @@ ENV CC=clang CXX=clang++
 
 FROM base-${TARGETARCH} AS base
 ARG CMAKEVERSION
+ARG NINJAVERSION
 RUN curl -fsSL https://github.com/Kitware/CMake/releases/download/v${CMAKEVERSION}/cmake-${CMAKEVERSION}-linux-$(uname -m).tar.gz | tar xz -C /usr/local --strip-components 1
+RUN dnf install -y unzip \
+    && curl -fsSL -o /tmp/ninja.zip https://github.com/ninja-build/ninja/releases/download/v${NINJAVERSION}/ninja-linux$([ "$(uname -m)" = "aarch64" ] && echo "-aarch64").zip \
+    && unzip /tmp/ninja.zip -d /usr/local/bin \
+    && rm /tmp/ninja.zip
+ENV CMAKE_GENERATOR=Ninja
 ENV LDFLAGS=-s
 
 # ============ СТАДИИ СБОРКИ (БЕЗ ИЗМЕНЕНИЙ) ============
@@ -57,13 +62,12 @@ RUN dnf install -y gcc-toolset-11-gcc gcc-toolset-11-gcc-c++ \
     && dnf update -y openssl openssl-libs ca-certificates \
     && dnf clean all
 ENV PATH=/opt/rh/gcc-toolset-11/root/usr/bin:$PATH
-ARG PARALLEL
 COPY CMakeLists.txt CMakePresets.json .
 COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
 RUN --mount=type=cache,target=/root/.ccache \
     cmake --preset 'CPU' \
-        && cmake --build --parallel ${PARALLEL} --preset 'CPU' \
-        && cmake --install build --component CPU --strip --parallel ${PARALLEL}
+        && cmake --build --preset 'CPU' -- -l $(nproc) \
+        && cmake --install build --component CPU --strip
 
 FROM base AS cuda-11
 ARG CUDA11VERSION=11.8
@@ -82,13 +86,12 @@ RUN dnf install -y \
     && dnf clean all \
     && rm -rf /var/cache/dnf
 ENV PATH=/usr/local/cuda-11/bin:$PATH
-ARG PARALLEL
 COPY CMakeLists.txt CMakePresets.json .
 COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
 RUN --mount=type=cache,target=/root/.ccache \
     cmake --preset 'CUDA 11' \
-        && cmake --build --parallel ${PARALLEL} --preset 'CUDA 11' \
-        && cmake --install build --component CUDA --strip --parallel ${PARALLEL}
+        && cmake --build --preset 'CUDA 11' -- -l $(nproc) \
+        && cmake --install build --component CUDA --strip
 
 FROM base AS cuda-12
 ARG CUDA12VERSION=12.8
@@ -107,13 +110,12 @@ RUN dnf install -y \
     && dnf clean all \
     && rm -rf /var/cache/dnf
 ENV PATH=/usr/local/cuda-12/bin:$PATH
-ARG PARALLEL
 COPY CMakeLists.txt CMakePresets.json .
 COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
 RUN --mount=type=cache,target=/root/.ccache \
     cmake --preset 'CUDA 12' \
-        && cmake --build --parallel ${PARALLEL} --preset 'CUDA 12' \
-        && cmake --install build --component CUDA --strip --parallel ${PARALLEL}
+        && cmake --build --preset 'CUDA 12' -- -l $(nproc) \
+        && cmake --install build --component CUDA --strip
 
 FROM base AS cuda-13
 ARG CUDA13VERSION=13.0
@@ -132,23 +134,21 @@ RUN dnf install -y \
     && dnf clean all \
     && rm -rf /var/cache/dnf
 ENV PATH=/usr/local/cuda-13/bin:$PATH
-ARG PARALLEL
 COPY CMakeLists.txt CMakePresets.json .
 COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
 RUN --mount=type=cache,target=/root/.ccache \
     cmake --preset 'CUDA 13' \
-        && cmake --build --parallel ${PARALLEL} --preset 'CUDA 13' \
-        && cmake --install build --component CUDA --strip --parallel ${PARALLEL}
+        && cmake --build --preset 'CUDA 13' -- -l $(nproc) \
+        && cmake --install build --component CUDA --strip
 
 FROM base AS rocm-6
 ENV PATH=/opt/rocm/hcc/bin:/opt/rocm/hip/bin:/opt/rocm/bin:/opt/rocm/hcc/bin:$PATH
-ARG PARALLEL
 COPY CMakeLists.txt CMakePresets.json .
 COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
 RUN --mount=type=cache,target=/root/.ccache \
-    cmake --preset 'ROCm 6' \
-        && cmake --build --parallel ${PARALLEL} --preset 'ROCm 6' \
-        && cmake --install build --component HIP --strip --parallel ${PARALLEL}
+    cmake --preset 'ROCm 7' \
+        && cmake --build --preset 'ROCm 7' -- -l $(nproc) \
+        && cmake --install build --component HIP --strip
 RUN rm -f dist/lib/ollama/rocm/rocblas/library/*gfx90[06]*
 
 FROM --platform=linux/arm64 nvcr.io/nvidia/l4t-jetpack:${JETPACK5VERSION} AS jetpack-5
@@ -160,11 +160,10 @@ RUN apt-get update && apt-get install -y curl ccache \
     && curl -fsSL https://github.com/Kitware/CMake/releases/download/v${CMAKEVERSION}/cmake-${CMAKEVERSION}-linux-$(uname -m).tar.gz | tar xz -C /usr/local --strip-components 1
 COPY CMakeLists.txt CMakePresets.json .
 COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
-ARG PARALLEL
 RUN --mount=type=cache,target=/root/.ccache \
     cmake --preset 'JetPack 5' \
-        && cmake --build --parallel ${PARALLEL} --preset 'JetPack 5' \
-        && cmake --install build --component CUDA --strip --parallel ${PARALLEL}
+        && cmake --build --preset 'JetPack 5' -- -l $(nproc) \
+        && cmake --install build --component CUDA --strip
 
 FROM --platform=linux/arm64 nvcr.io/nvidia/l4t-jetpack:${JETPACK6VERSION} AS jetpack-6
 ARG CMAKEVERSION
@@ -175,19 +174,28 @@ RUN apt-get update && apt-get install -y curl ccache \
     && curl -fsSL https://github.com/Kitware/CMake/releases/download/v${CMAKEVERSION}/cmake-${CMAKEVERSION}-linux-$(uname -m).tar.gz | tar xz -C /usr/local --strip-components 1
 COPY CMakeLists.txt CMakePresets.json .
 COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
-ARG PARALLEL
 RUN --mount=type=cache,target=/root/.ccache \
     cmake --preset 'JetPack 6' \
-        && cmake --build --parallel ${PARALLEL} --preset 'JetPack 6' \
-        && cmake --install build --component CUDA --strip --parallel ${PARALLEL}
+        && cmake --build --preset 'JetPack 6' -- -l $(nproc) \
+        && cmake --install build --component CUDA --strip
 
 FROM base AS vulkan
+ARG VULKANVERSION
+RUN ln -s /usr/bin/python3 /usr/bin/python \
+    && wget https://sdk.lunarg.com/sdk/download/${VULKANVERSION}/linux/vulkansdk-linux-x86_64-${VULKANVERSION}.tar.xz -O /tmp/vulkansdk.tar.xz \
+    && tar xvf /tmp/vulkansdk.tar.xz -C /tmp \
+    && /tmp/${VULKANVERSION}/vulkansdk -j 8 vulkan-headers \
+    && /tmp/${VULKANVERSION}/vulkansdk -j 8 shaderc \
+    && cp -r /tmp/${VULKANVERSION}/x86_64/include/* /usr/local/include/ \
+    && cp -r /tmp/${VULKANVERSION}/x86_64/lib/* /usr/local/lib \
+    && cp -r /tmp/${VULKANVERSION}/x86_64/bin/* /usr/local/bin/ \
+    && rm -rf /tmp/${VULKANVERSION} /tmp/vulkansdk.tar.xz
 COPY CMakeLists.txt CMakePresets.json .
 COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
 RUN --mount=type=cache,target=/root/.ccache \
     cmake --preset 'Vulkan' \
-        && cmake --build --parallel --preset 'Vulkan' \
-        && cmake --install build --component Vulkan --strip --parallel 8 
+        && cmake --build --preset 'Vulkan' -- -l $(nproc) \
+        && cmake --install build --component Vulkan --strip
 
 FROM base AS build
 WORKDIR /go/src/github.com/ollama/ollama
@@ -202,6 +210,8 @@ ARG GOFLAGS="'-ldflags=-w -s'"
 ENV CGO_ENABLED=1
 ARG CGO_CFLAGS
 ARG CGO_CXXFLAGS
+ENV CGO_CFLAGS="${CGO_CFLAGS}"
+ENV CGO_CXXFLAGS="${CGO_CXXFLAGS}"
 RUN --mount=type=cache,target=/root/.cache/go-build \
     go build -trimpath -buildmode=pie -o /bin/ollama .
 
@@ -210,6 +220,7 @@ FROM --platform=linux/amd64 scratch AS amd64
 COPY --from=cuda-12 dist/lib/ollama /lib/ollama/
 COPY --from=cuda-13 dist/lib/ollama /lib/ollama/
 COPY --from=vulkan  dist/lib/ollama  /lib/ollama/
+COPY --from=mlx     /go/src/github.com/ollama/ollama/dist/lib/ollama /lib/ollama/
 
 FROM --platform=linux/arm64 scratch AS arm64
 COPY --from=cuda-12 dist/lib/ollama /lib/ollama/
@@ -218,7 +229,7 @@ COPY --from=jetpack-5 dist/lib/ollama/ /lib/ollama/
 COPY --from=jetpack-6 dist/lib/ollama/ /lib/ollama/
 
 FROM scratch AS rocm
-COPY --from=rocm-6 dist/lib/ollama /lib/ollama
+COPY --from=rocm-7 dist/lib/ollama /lib/ollama
 
 # ✅ ИСПРАВЛЕННАЯ archive стадия (без RUN, только COPY)
 FROM ${FLAVOR} AS archive
