@@ -62,15 +62,15 @@ jobs:
     runs-on: ubuntu-latest
     needs: resolve-upstream
     if: needs.resolve-upstream.outputs.already_synced == 'false'
-    # Права на запись в репозиторий (пуш в main + теги)
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          # Используем встроенный GITHUB_TOKEN с правами write
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # GH_PAT — Personal Access Token с правом workflow,
+          # необходим чтобы пушить изменения в .github/workflows/
+          token: ${{ secrets.GH_PAT }}
 
       - name: Configure git
         run: |
