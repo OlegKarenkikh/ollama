@@ -108,13 +108,17 @@ RUN --mount=type=cache,target=/root/.ccache \
     && cmake --build /src/build -- -j $(nproc) \
     && cmake --install /src/build --component Vulkan --strip --prefix /src/dist
 
-# ── Go binary (ubuntu:22.04 — apt, faster, no dnf) ──────────────────────────
-# FIX: switched from AlmaLinux base to ubuntu:22.04 (lighter, apt-based).
-# FIX: -ldflags passed directly to go build (not via ARG GOFLAGS — broken syntax).
+# ── Go binary ────────────────────────────────────────────────────────────────
+# ubuntu:22.04 base — apt faster than dnf, fits ubuntu-latest runner well.
+# libstdc++-11-dev: CGO links against C++ headers (tree-sitter, ggml).
+#   Without it `go build` fails: undefined reference to C++ runtime symbols.
+# Go version resolved dynamically from go.mod (no hard-coded version).
 FROM ubuntu:22.04 AS go-build
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-       curl ca-certificates gcc g++ make \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+       curl ca-certificates \
+       gcc g++ make \
+       libc6-dev libstdc++-11-dev \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /go/src/github.com/ollama/ollama
@@ -132,11 +136,15 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     -o /bin/ollama .
 
 # ── final-cpu: только CPU inference ─────────────────────────────────────────
+# libgcc-s1 + libstdc++6: CGO-бинарь динамически слинкован с libstdc++.
+# Без них `ollama serve` падает:
+#   error while loading shared libraries: libstdc++.so.6: cannot open shared object file
 FROM ubuntu:24.04 AS final-cpu
 RUN apt-get update \
     && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends \
        ca-certificates libvulkan1 openssl libssl3 \
+       libgcc-s1 libstdc++6 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=go-build  /bin/ollama               /usr/bin/ollama
@@ -155,11 +163,13 @@ ENTRYPOINT ["/usr/bin/ollama"]
 CMD ["serve"]
 
 # ── final-amd64: CPU + CUDA 12 + CUDA 13 + Vulkan ───────────────────────────
+# libgcc-s1 + libstdc++6: CGO-бинарь динамически слинкован с libstdc++.
 FROM ubuntu:24.04 AS final-amd64
 RUN apt-get update \
     && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends \
        ca-certificates libvulkan1 openssl libssl3 \
+       libgcc-s1 libstdc++6 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=go-build       /bin/ollama               /usr/bin/ollama
