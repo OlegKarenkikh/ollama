@@ -101,12 +101,6 @@ jobs:
 
   # ─────────────────────────────────────────────
   # 3. Сборка Docker образа (GPU: CUDA 12 + CUDA 13 + Vulkan)
-  #
-  #  Используем основной Dockerfile с FLAVOR=amd64.
-  #  CUDA toolkit нужен только для компиляции GPU-библиотек —
-  #  сам runner GPU не нужен. ROCm и Jetpack пропускаем
-  #  (требуют специфических runners).
-  #  Финальный stage: AlmaLinux 10 (RHEL-severity в Trivy → чистый скан).
   # ─────────────────────────────────────────────
   docker-build:
     runs-on: ubuntu-latest
@@ -123,10 +117,6 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # Основной Dockerfile, FLAVOR=amd64 → собираются стадии:
-      #   cpu, cuda-12, cuda-13, vulkan, build → archive → almalinux:10
-      # ROCm (rocm-7) и Jetpack (jetpack-5/6) пропускаются — они не
-      # входят в amd64 scratch stage и не нужны для финального образа.
       - name: Build GPU image (CUDA 12 + CUDA 13 + Vulkan + CPU)
         uses: docker/build-push-action@v6
         with:
@@ -162,11 +152,6 @@ jobs:
 
   # ─────────────────────────────────────────────
   # 4. Сканирование безопасности (Trivy)
-  #
-  #  ignore-unfixed: true — блокируем только CVE с доступным фиксом.
-  #  Unfixed CVE (не имеющие патча ни в одном дистрибутиве) не должны
-  #  останавливать пайплайн: это ответственность upstream, а не наша.
-  #  SARIF публикуется в GitHub Security для отслеживания.
   # ─────────────────────────────────────────────
   security-scan:
     runs-on: ubuntu-latest
@@ -183,7 +168,6 @@ jobs:
       - name: Load Docker image
         run: docker load < /tmp/ollama-image.tar.gz
 
-      # Шаг 1: полный скан → SARIF (не блокирует, все unfixed тоже видны)
       - name: Trivy scan — SARIF (все CVE для Security tab)
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
         with:
@@ -201,7 +185,6 @@ jobs:
           sarif_file: trivy-results.sarif
           category: trivy-docker
 
-      # Шаг 2: блокирующий скан — только fixable CVE
       - name: Trivy scan — block on fixable CRITICAL/HIGH
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
         with:
