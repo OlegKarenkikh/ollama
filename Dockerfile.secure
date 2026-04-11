@@ -2,16 +2,18 @@
 # vim: filetype=dockerfile
 # Dockerfile.secure — используется в CI (GitHub Actions)
 #
-# Целевая стадия задаётся через --target в workflow:
-#   final-cpu   → CPU inference only  (CI default, ~15 min на ubuntu-latest)
-#   final-amd64 → CPU + CUDA 12 + CUDA 13 + Vulkan
-#   final-arm64 → CPU + JetPack 5 + JetPack 6
-#   final-rocm  → CPU + ROCm 6
+# Сборка управляется через build-arg FLAVOR:
+#   FLAVOR=cpu   → CPU inference only  (CI default, ~15 min)
+#   FLAVOR=amd64 → CPU + CUDA 12 + CUDA 13 + Vulkan
+#   FLAVOR=arm64 → CPU + JetPack 5 + JetPack 6
+#   FLAVOR=rocm  → CPU + ROCm 6
 #
-# BuildKit НЕ поддерживает переменные в COPY --from= и FROM --from=,
-# поэтому каждый flavor — отдельная именованная финальная стадия.
-# Финальная стадия: ubuntu:24.04 + apt-get upgrade.
+# Архитектура проверена в e5c7dfe (рабочая сборка):
+# - Go собирается на AlmaLinux 8 base (есть все CGO headers)
+# - FLAVOR выбирает нужный archive-слой через ARG
+# - Финальный образ: ubuntu:24.04 + apt-get upgrade
 
+ARG FLAVOR=cpu
 ARG PARALLEL=8
 
 ARG ROCMVERSION=6.3.3
@@ -54,79 +56,75 @@ ENV CC=clang CXX=clang++
 
 FROM base-${TARGETARCH:-amd64} AS base
 ARG CMAKEVERSION
-ARG NINJAVERSION
 RUN curl -fsSL \
     https://github.com/Kitware/CMake/releases/download/v${CMAKEVERSION}/cmake-${CMAKEVERSION}-linux-$(uname -m).tar.gz \
     | tar xz -C /usr/local --strip-components 1
 ENV LDFLAGS=-s
-ENV CMAKE_GENERATOR=Ninja
 
-# ── CPU inference library ───────────────────────────────────────────────────
+# ── CPU inference library ──────────────────────────────────────────────────
 FROM base AS cpu
-WORKDIR /src
-RUN dnf install -y gcc-toolset-11-gcc gcc-toolset-11-gcc-c++ || true
+RUN dnf install -y gcc-toolset-11-gcc gcc-toolset-11-gcc-c++ \
+    && dnf clean all
 ENV PATH=/opt/rh/gcc-toolset-11/root/usr/bin:$PATH
 ARG PARALLEL
-COPY CMakeLists.txt CMakePresets.json ./
+COPY CMakeLists.txt CMakePresets.json .
 COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
 RUN --mount=type=cache,target=/root/.ccache \
-    cmake --preset 'CPU' -B /src/build \
-    && cmake --build /src/build -- -j ${PARALLEL} \
-    && cmake --install /src/build --component CPU --strip --prefix /src/dist
+    cmake --preset 'CPU' \
+    && cmake --build --parallel ${PARALLEL} --preset 'CPU' \
+    && cmake --install build --component CPU --strip --parallel ${PARALLEL}
 
-# ── CUDA 12 ─────────────────────────────────────────────────────────────────
+# ── CUDA 12 ────────────────────────────────────────────────────────────────
 FROM base AS cuda-12
-WORKDIR /src
 ARG CUDA12VERSION=12.8
-RUN dnf install -y cuda-toolkit-${CUDA12VERSION//./-}
+RUN dnf install -y cuda-toolkit-${CUDA12VERSION//./-} \
+    && dnf clean all
 ENV PATH=/usr/local/cuda-12/bin:$PATH
 ARG PARALLEL
-COPY CMakeLists.txt CMakePresets.json ./
+COPY CMakeLists.txt CMakePresets.json .
 COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
 RUN --mount=type=cache,target=/root/.ccache \
-    cmake --preset 'CUDA 12' -B /src/build \
-    && cmake --build /src/build -- -j ${PARALLEL} \
-    && cmake --install /src/build --component CUDA --strip --prefix /src/dist
+    cmake --preset 'CUDA 12' \
+    && cmake --build --parallel ${PARALLEL} --preset 'CUDA 12' \
+    && cmake --install build --component CUDA --strip --parallel ${PARALLEL}
 
-# ── CUDA 13 ─────────────────────────────────────────────────────────────────
+# ── CUDA 13 ────────────────────────────────────────────────────────────────
 FROM base AS cuda-13
-WORKDIR /src
 ARG CUDA13VERSION=13.0
-RUN dnf install -y cuda-toolkit-${CUDA13VERSION//./-}
+RUN dnf install -y cuda-toolkit-${CUDA13VERSION//./-} \
+    && dnf clean all
 ENV PATH=/usr/local/cuda-13/bin:$PATH
 ARG PARALLEL
-COPY CMakeLists.txt CMakePresets.json ./
+COPY CMakeLists.txt CMakePresets.json .
 COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
 RUN --mount=type=cache,target=/root/.ccache \
-    cmake --preset 'CUDA 13' -B /src/build \
-    && cmake --build /src/build -- -j ${PARALLEL} \
-    && cmake --install /src/build --component CUDA --strip --prefix /src/dist
+    cmake --preset 'CUDA 13' \
+    && cmake --build --parallel ${PARALLEL} --preset 'CUDA 13' \
+    && cmake --install build --component CUDA --strip --parallel ${PARALLEL}
 
-# ── ROCm 6 ──────────────────────────────────────────────────────────────────
+# ── ROCm 6 ────────────────────────────────────────────────────────────────
 FROM base AS rocm-6
-WORKDIR /src
 ENV PATH=/opt/rocm/hcc/bin:/opt/rocm/hip/bin:/opt/rocm/bin:/opt/rocm/hcc/bin:$PATH
 ARG PARALLEL
-COPY CMakeLists.txt CMakePresets.json ./
+COPY CMakeLists.txt CMakePresets.json .
 COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
 RUN --mount=type=cache,target=/root/.ccache \
-    cmake --preset 'ROCm 6' -B /src/build \
-    && cmake --build /src/build -- -j ${PARALLEL} \
-    && cmake --install /src/build --component HIP --strip --prefix /src/dist
-RUN rm -f /src/dist/lib/ollama/rocm/rocblas/library/*gfx90[06]*
+    cmake --preset 'ROCm 6' \
+    && cmake --build --parallel ${PARALLEL} --preset 'ROCm 6' \
+    && cmake --install build --component HIP --strip --parallel ${PARALLEL}
+RUN rm -f dist/lib/ollama/rocm/rocblas/library/*gfx90[06]*
 
-# ── Vulkan ───────────────────────────────────────────────────────────────────
+# ── Vulkan ─────────────────────────────────────────────────────────────────
 FROM base AS vulkan
-WORKDIR /src
-ARG PARALLEL
-COPY CMakeLists.txt CMakePresets.json ./
+COPY CMakeLists.txt CMakePresets.json .
 COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
+ARG PARALLEL
 RUN --mount=type=cache,target=/root/.ccache \
-    cmake --preset 'Vulkan' -B /src/build \
-    && cmake --build /src/build -- -j ${PARALLEL} \
-    && cmake --install /src/build --component Vulkan --strip --prefix /src/dist
+    cmake --preset 'Vulkan' \
+    && cmake --build --parallel ${PARALLEL} --preset 'Vulkan' \
+    && cmake --install build --component Vulkan --strip --parallel ${PARALLEL}
 
-# ── JetPack 5 ────────────────────────────────────────────────────────────────
+# ── JetPack 5 ──────────────────────────────────────────────────────────────
 FROM --platform=linux/arm64 nvcr.io/nvidia/l4t-jetpack:${JETPACK5VERSION} AS jetpack-5
 ARG CMAKEVERSION
 RUN apt-get update && apt-get install -y curl ccache \
@@ -135,16 +133,15 @@ RUN apt-get update && apt-get install -y curl ccache \
     && rm -rf /var/lib/apt/lists/* \
     && curl -fsSL https://github.com/Kitware/CMake/releases/download/v${CMAKEVERSION}/cmake-${CMAKEVERSION}-linux-$(uname -m).tar.gz \
        | tar xz -C /usr/local --strip-components 1
-WORKDIR /src
-COPY CMakeLists.txt CMakePresets.json ./
+COPY CMakeLists.txt CMakePresets.json .
 COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
 ARG PARALLEL
 RUN --mount=type=cache,target=/root/.ccache \
-    cmake --preset 'JetPack 5' -B /src/build \
-    && cmake --build /src/build -- -j ${PARALLEL} \
-    && cmake --install /src/build --component CUDA --strip --prefix /src/dist
+    cmake --preset 'JetPack 5' \
+    && cmake --build --parallel ${PARALLEL} --preset 'JetPack 5' \
+    && cmake --install build --component CUDA --strip --parallel ${PARALLEL}
 
-# ── JetPack 6 ────────────────────────────────────────────────────────────────
+# ── JetPack 6 ──────────────────────────────────────────────────────────────
 FROM --platform=linux/arm64 nvcr.io/nvidia/l4t-jetpack:${JETPACK6VERSION} AS jetpack-6
 ARG CMAKEVERSION
 RUN apt-get update && apt-get install -y curl ccache \
@@ -153,44 +150,52 @@ RUN apt-get update && apt-get install -y curl ccache \
     && rm -rf /var/lib/apt/lists/* \
     && curl -fsSL https://github.com/Kitware/CMake/releases/download/v${CMAKEVERSION}/cmake-${CMAKEVERSION}-linux-$(uname -m).tar.gz \
        | tar xz -C /usr/local --strip-components 1
-WORKDIR /src
-COPY CMakeLists.txt CMakePresets.json ./
+COPY CMakeLists.txt CMakePresets.json .
 COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
 ARG PARALLEL
 RUN --mount=type=cache,target=/root/.ccache \
-    cmake --preset 'JetPack 6' -B /src/build \
-    && cmake --build /src/build -- -j ${PARALLEL} \
-    && cmake --install /src/build --component CUDA --strip --prefix /src/dist
+    cmake --preset 'JetPack 6' \
+    && cmake --build --parallel ${PARALLEL} --preset 'JetPack 6' \
+    && cmake --install build --component CUDA --strip --parallel ${PARALLEL}
 
-# ── Go binary ────────────────────────────────────────────────────────────────
-# ubuntu:22.04: apt-based, fits ubuntu-latest runner.
-# libstdc++-11-dev: CGO links against C++ headers at build time.
-FROM ubuntu:22.04 AS go-build
-RUN apt-get update \
-    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-       curl ca-certificates \
-       gcc g++ make \
-       libc6-dev libstdc++-11-dev \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+# ── Go binary (AlmaLinux 8 base — has all CGO headers) ─────────────────────
+FROM base AS build
 WORKDIR /go/src/github.com/ollama/ollama
-COPY go.mod go.sum ./
-RUN GOVERSION=$(awk '/^go /{print $2}' go.mod) \
-    && curl -fsSL https://golang.org/dl/go${GOVERSION}.linux-$(case $(uname -m) in x86_64) echo amd64 ;; aarch64) echo arm64 ;; esac).tar.gz \
-       | tar xz -C /usr/local
+COPY go.mod go.sum .
+RUN curl -fsSL https://golang.org/dl/go$(awk '/^go/ { print $2 }' go.mod).linux-$(case $(uname -m) in x86_64) echo amd64 ;; aarch64) echo arm64 ;; esac).tar.gz \
+    | tar xz -C /usr/local
 ENV PATH=/usr/local/go/bin:$PATH
 RUN go mod download
 COPY . .
+ARG GOFLAGS="'-ldflags=-w -s'"
 ENV CGO_ENABLED=1
+ARG CGO_CFLAGS
+ARG CGO_CXXFLAGS
 RUN --mount=type=cache,target=/root/.cache/go-build \
-    go build -trimpath -buildmode=pie \
-    -ldflags="-w -s" \
-    -o /bin/ollama .
+    go build -trimpath -buildmode=pie -o /bin/ollama .
 
-# ── Общий базовый слой для всех финальных образов ────────────────────────────
-# ubuntu:24.04 + apt-get upgrade: все fixable CVE закрыты.
-# libgcc-s1 + libstdc++6: CGO-бинарь динамически слинкован с libstdc++.
-FROM ubuntu:24.04 AS final-base
+# ── Flavor archive stages ───────────────────────────────────────────────────
+FROM --platform=linux/amd64 scratch AS amd64
+COPY --from=cuda-12 dist/lib/ollama /lib/ollama/
+COPY --from=cuda-13 dist/lib/ollama /lib/ollama/
+COPY --from=vulkan  dist/lib/ollama /lib/ollama/
+
+FROM --platform=linux/arm64 scratch AS arm64
+COPY --from=jetpack-5 dist/lib/ollama/ /lib/ollama/
+COPY --from=jetpack-6 dist/lib/ollama/ /lib/ollama/
+
+FROM scratch AS rocm
+COPY --from=rocm-6 dist/lib/ollama /lib/ollama
+
+FROM scratch AS cpu
+
+# ── Archive: выбирает нужный flavor ────────────────────────────────────
+FROM ${FLAVOR} AS archive
+COPY --from=cpu-libs dist/lib/ollama /lib/ollama
+COPY --from=build /bin/ollama /bin/ollama
+
+# ── Final image: ubuntu:24.04 + apt upgrade ───────────────────────────────
+FROM ubuntu:24.04
 RUN apt-get update \
     && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends \
@@ -198,56 +203,14 @@ RUN apt-get update \
        libgcc-s1 libstdc++6 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+COPY --from=archive /bin/ollama /usr/bin/ollama
+COPY --from=archive /lib/ollama /usr/lib/ollama
 ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ENV LD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/lib/ollama
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
 ENV NVIDIA_VISIBLE_DEVICES=all
 ENV OLLAMA_HOST=0.0.0.0:11434
 EXPOSE 11434
-
-# ── final-cpu: CPU inference only (CI default) ───────────────────────────────
-FROM final-base AS final-cpu
-COPY --from=go-build /bin/ollama          /usr/bin/ollama
-COPY --from=cpu      /src/dist/lib/ollama /usr/lib/ollama/
-RUN groupadd -r ollama && useradd -r -g ollama -s /sbin/nologin ollama \
-    && mkdir -p /home/ollama \
-    && chown -R ollama:ollama /home/ollama /usr/lib/ollama /usr/bin/ollama
-USER ollama
-ENTRYPOINT ["/usr/bin/ollama"]
-CMD ["serve"]
-
-# ── final-amd64: CPU + CUDA 12 + CUDA 13 + Vulkan ───────────────────────────
-FROM final-base AS final-amd64
-COPY --from=go-build  /bin/ollama          /usr/bin/ollama
-COPY --from=cpu       /src/dist/lib/ollama /usr/lib/ollama/
-COPY --from=cuda-12   /src/dist/lib/ollama /usr/lib/ollama/
-COPY --from=cuda-13   /src/dist/lib/ollama /usr/lib/ollama/
-COPY --from=vulkan    /src/dist/lib/ollama /usr/lib/ollama/
-RUN groupadd -r ollama && useradd -r -g ollama -s /sbin/nologin ollama \
-    && mkdir -p /home/ollama \
-    && chown -R ollama:ollama /home/ollama /usr/lib/ollama /usr/bin/ollama
-USER ollama
-ENTRYPOINT ["/usr/bin/ollama"]
-CMD ["serve"]
-
-# ── final-arm64: CPU + JetPack 5 + JetPack 6 ────────────────────────────────
-FROM final-base AS final-arm64
-COPY --from=go-build  /bin/ollama          /usr/bin/ollama
-COPY --from=cpu       /src/dist/lib/ollama /usr/lib/ollama/
-COPY --from=jetpack-5 /src/dist/lib/ollama /usr/lib/ollama/
-COPY --from=jetpack-6 /src/dist/lib/ollama /usr/lib/ollama/
-RUN groupadd -r ollama && useradd -r -g ollama -s /sbin/nologin ollama \
-    && mkdir -p /home/ollama \
-    && chown -R ollama:ollama /home/ollama /usr/lib/ollama /usr/bin/ollama
-USER ollama
-ENTRYPOINT ["/usr/bin/ollama"]
-CMD ["serve"]
-
-# ── final-rocm: CPU + ROCm 6 ─────────────────────────────────────────────────
-FROM final-base AS final-rocm
-COPY --from=go-build /bin/ollama          /usr/bin/ollama
-COPY --from=cpu      /src/dist/lib/ollama /usr/lib/ollama/
-COPY --from=rocm-6   /src/dist/lib/ollama /usr/lib/ollama/
 RUN groupadd -r ollama && useradd -r -g ollama -s /sbin/nologin ollama \
     && mkdir -p /home/ollama \
     && chown -R ollama:ollama /home/ollama /usr/lib/ollama /usr/bin/ollama
