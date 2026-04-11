@@ -2,16 +2,16 @@
 # vim: filetype=dockerfile
 # Dockerfile.secure — используется в CI (GitHub Actions)
 #
-# Сборка контролируется через build-arg FLAVOR:
-#   FLAVOR=cpu      → CPU inference only  (CI default, ~15 min на ubuntu-latest)
-#   FLAVOR=amd64    → CPU + CUDA 12 + CUDA 13 + Vulkan  (full GPU)
-#   FLAVOR=arm64    → CPU + JetPack 5 + JetPack 6
-#   FLAVOR=rocm     → CPU + ROCm 6
+# Целевая стадия задаётся через --target в workflow:
+#   final-cpu   → CPU inference only  (CI default, ~15 min на ubuntu-latest)
+#   final-amd64 → CPU + CUDA 12 + CUDA 13 + Vulkan
+#   final-arm64 → CPU + JetPack 5 + JetPack 6
+#   final-rocm  → CPU + ROCm 6
 #
+# BuildKit НЕ поддерживает переменные в COPY --from= и FROM --from=,
+# поэтому каждый flavor — отдельная именованная финальная стадия.
 # Финальная стадия: ubuntu:24.04 + apt-get upgrade.
-# Unfixed CVE в AlmaLinux 8 build-стадиях в финальный образ не попадают.
 
-ARG FLAVOR=cpu
 ARG PARALLEL=8
 
 ARG ROCMVERSION=6.3.3
@@ -163,10 +163,9 @@ RUN --mount=type=cache,target=/root/.ccache \
     && cmake --install /src/build --component CUDA --strip --prefix /src/dist
 
 # ── Go binary ────────────────────────────────────────────────────────────────
-# ubuntu:22.04: apt-based, no dnf quirks, fits ubuntu-latest runner.
+# ubuntu:22.04: apt-based, fits ubuntu-latest runner.
 # libstdc++-11-dev: CGO links against C++ headers at build time.
-# Go version resolved dynamically from go.mod.
-FROM ubuntu:22.04 AS build
+FROM ubuntu:22.04 AS go-build
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
        curl ca-certificates \
@@ -188,31 +187,10 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     -ldflags="-w -s" \
     -o /bin/ollama .
 
-# ── Flavor archive stages (cpu / amd64 / arm64 / rocm) ──────────────────────
-# BuildKit только строит стадии, достижимые из целевого FLAVOR.
-# При FLAVOR=cpu строятся только: base → cpu → build → archive-cpu → final
-
-FROM scratch AS archive-cpu
-COPY --from=cpu  /src/dist/lib/ollama /lib/ollama/
-
-FROM scratch AS archive-amd64
-COPY --from=cpu       /src/dist/lib/ollama /lib/ollama/
-COPY --from=cuda-12   /src/dist/lib/ollama /lib/ollama/
-COPY --from=cuda-13   /src/dist/lib/ollama /lib/ollama/
-COPY --from=vulkan    /src/dist/lib/ollama /lib/ollama/
-
-FROM scratch AS archive-arm64
-COPY --from=cpu       /src/dist/lib/ollama /lib/ollama/
-COPY --from=jetpack-5 /src/dist/lib/ollama /lib/ollama/
-COPY --from=jetpack-6 /src/dist/lib/ollama /lib/ollama/
-
-FROM scratch AS archive-rocm
-COPY --from=rocm-6    /src/dist/lib/ollama /lib/ollama/
-
-# ── Final image ──────────────────────────────────────────────────────────────
+# ── Общий базовый слой для всех финальных образов ────────────────────────────
 # ubuntu:24.04 + apt-get upgrade: все fixable CVE закрыты.
 # libgcc-s1 + libstdc++6: CGO-бинарь динамически слинкован с libstdc++.
-FROM ubuntu:24.04 AS final
+FROM ubuntu:24.04 AS final-base
 RUN apt-get update \
     && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends \
@@ -220,17 +198,59 @@ RUN apt-get update \
        libgcc-s1 libstdc++6 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=build          /bin/ollama          /usr/bin/ollama
-COPY --from=archive-${FLAVOR} /lib/ollama       /usr/lib/ollama/
 ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ENV LD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/lib/ollama
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
 ENV NVIDIA_VISIBLE_DEVICES=all
 ENV OLLAMA_HOST=0.0.0.0:11434
+EXPOSE 11434
+
+# ── final-cpu: CPU inference only (CI default) ───────────────────────────────
+FROM final-base AS final-cpu
+COPY --from=go-build /bin/ollama          /usr/bin/ollama
+COPY --from=cpu      /src/dist/lib/ollama /usr/lib/ollama/
 RUN groupadd -r ollama && useradd -r -g ollama -s /sbin/nologin ollama \
     && mkdir -p /home/ollama \
     && chown -R ollama:ollama /home/ollama /usr/lib/ollama /usr/bin/ollama
 USER ollama
-EXPOSE 11434
+ENTRYPOINT ["/usr/bin/ollama"]
+CMD ["serve"]
+
+# ── final-amd64: CPU + CUDA 12 + CUDA 13 + Vulkan ───────────────────────────
+FROM final-base AS final-amd64
+COPY --from=go-build  /bin/ollama          /usr/bin/ollama
+COPY --from=cpu       /src/dist/lib/ollama /usr/lib/ollama/
+COPY --from=cuda-12   /src/dist/lib/ollama /usr/lib/ollama/
+COPY --from=cuda-13   /src/dist/lib/ollama /usr/lib/ollama/
+COPY --from=vulkan    /src/dist/lib/ollama /usr/lib/ollama/
+RUN groupadd -r ollama && useradd -r -g ollama -s /sbin/nologin ollama \
+    && mkdir -p /home/ollama \
+    && chown -R ollama:ollama /home/ollama /usr/lib/ollama /usr/bin/ollama
+USER ollama
+ENTRYPOINT ["/usr/bin/ollama"]
+CMD ["serve"]
+
+# ── final-arm64: CPU + JetPack 5 + JetPack 6 ────────────────────────────────
+FROM final-base AS final-arm64
+COPY --from=go-build  /bin/ollama          /usr/bin/ollama
+COPY --from=cpu       /src/dist/lib/ollama /usr/lib/ollama/
+COPY --from=jetpack-5 /src/dist/lib/ollama /usr/lib/ollama/
+COPY --from=jetpack-6 /src/dist/lib/ollama /usr/lib/ollama/
+RUN groupadd -r ollama && useradd -r -g ollama -s /sbin/nologin ollama \
+    && mkdir -p /home/ollama \
+    && chown -R ollama:ollama /home/ollama /usr/lib/ollama /usr/bin/ollama
+USER ollama
+ENTRYPOINT ["/usr/bin/ollama"]
+CMD ["serve"]
+
+# ── final-rocm: CPU + ROCm 6 ─────────────────────────────────────────────────
+FROM final-base AS final-rocm
+COPY --from=go-build /bin/ollama          /usr/bin/ollama
+COPY --from=cpu      /src/dist/lib/ollama /usr/lib/ollama/
+COPY --from=rocm-6   /src/dist/lib/ollama /usr/lib/ollama/
+RUN groupadd -r ollama && useradd -r -g ollama -s /sbin/nologin ollama \
+    && mkdir -p /home/ollama \
+    && chown -R ollama:ollama /home/ollama /usr/lib/ollama /usr/bin/ollama
+USER ollama
 ENTRYPOINT ["/usr/bin/ollama"]
 CMD ["serve"]
