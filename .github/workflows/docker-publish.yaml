@@ -1,11 +1,6 @@
 name: Docker Build, Security Scan & Publish
 
 on:
-  push:
-    branches: [main]
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
   workflow_dispatch:
     inputs:
       upstream_tag:
@@ -13,9 +8,9 @@ on:
         required: false
         default: ''
       flavor:
-        description: 'Build target: final-cpu (fast CI) or final-amd64 (full GPU image)'
+        description: 'Build flavor: cpu (fast CI) or amd64 (full GPU)'
         required: false
-        default: 'final-cpu'
+        default: 'cpu'
   schedule:
     - cron: '0 3 * * *'
 
@@ -32,9 +27,9 @@ jobs:
     permissions:
       contents: read
     outputs:
-      upstream_tag: ${{ steps.tag.outputs.tag }}
+      upstream_tag:   ${{ steps.tag.outputs.tag }}
       already_synced: ${{ steps.check.outputs.already_synced }}
-      build_target: ${{ steps.target.outputs.build_target }}
+      build_flavor:   ${{ steps.flavor.outputs.build_flavor }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -54,14 +49,14 @@ jobs:
             echo "tag=$LATEST" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Resolve build target
-        id: target
+      - name: Resolve build flavor
+        id: flavor
         run: |
-          INPUT_TARGET="${{ github.event.inputs.flavor }}"
-          if [ -n "$INPUT_TARGET" ]; then
-            echo "build_target=$INPUT_TARGET" >> "$GITHUB_OUTPUT"
+          INPUT_FLAVOR="${{ github.event.inputs.flavor }}"
+          if [ -n "$INPUT_FLAVOR" ]; then
+            echo "build_flavor=$INPUT_FLAVOR" >> "$GITHUB_OUTPUT"
           else
-            echo "build_target=final-cpu" >> "$GITHUB_OUTPUT"
+            echo "build_flavor=cpu" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Check if already synced
@@ -88,9 +83,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          # GH_PAT нужен для push тегов при включённой branch protection.
-          # Fallback на GITHUB_TOKEN если GH_PAT не задан в секретах.
-          token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.GH_PAT }}
 
       - name: Configure git
         run: |
@@ -123,6 +116,7 @@ jobs:
 
   # ─────────────────────────────────────────────
   # 3. Сборка Docker образа
+  # FLAVOR=cpu → BuildKit строит только cpu + build + archive-cpu + final
   # ─────────────────────────────────────────────
   docker-build:
     runs-on: ubuntu-latest
@@ -139,12 +133,13 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build image (target=${{ needs.resolve-upstream.outputs.build_target }})
+      - name: Build image (FLAVOR=${{ needs.resolve-upstream.outputs.build_flavor }})
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile.secure
-          target: ${{ needs.resolve-upstream.outputs.build_target }}
+          build-args: |
+            FLAVOR=${{ needs.resolve-upstream.outputs.build_flavor }}
           push: false
           load: true
           tags: |
@@ -279,16 +274,16 @@ jobs:
           docker pull "${{ env.DOCKER_IMAGE }}:${TAG}"
           echo "✅ Pulled ${{ env.DOCKER_IMAGE }}:${TAG} from Docker Hub"
 
-      - name: Smoke test — ollama --version
+      - name: Smoke test — ollama version
         env:
           TAG: ${{ needs.resolve-upstream.outputs.upstream_tag }}
         run: |
           VERSION=$(docker run --rm "${{ env.DOCKER_IMAGE }}:${TAG}" ollama --version 2>&1)
           echo "ollama --version: $VERSION"
           if echo "$VERSION" | grep -qiE 'ollama|version|[0-9]+\.[0-9]+'; then
-            echo "✅ ollama --version: $VERSION"
+            echo "✅ ollama --version OK"
           else
-            echo "❌ Unexpected output from ollama --version: $VERSION"
+            echo "❌ Unexpected output: $VERSION"
             exit 1
           fi
 
@@ -332,11 +327,11 @@ jobs:
           SECURITY: ${{ needs.security-scan.result }}
           TEST:     ${{ needs.smoke-test.result }}
           TAG:      ${{ needs.resolve-upstream.outputs.upstream_tag }}
-          TARGET:   ${{ needs.resolve-upstream.outputs.build_target }}
+          FLAVOR:   ${{ needs.resolve-upstream.outputs.build_flavor }}
         run: |
           echo "═══════════════════════════════════════"
           echo "  Tag        : $TAG"
-          echo "  Target     : $TARGET"
+          echo "  Flavor     : $FLAVOR"
           echo "  Security   : $SECURITY"
           echo "  Smoke test : $TEST"
           echo "═══════════════════════════════════════"
