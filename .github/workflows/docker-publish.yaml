@@ -1,12 +1,21 @@
 name: Docker Build, Security Scan & Publish
 
 on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
   workflow_dispatch:
     inputs:
       upstream_tag:
         description: 'Upstream ollama tag to sync (e.g. v0.6.5). Leave empty to auto-detect latest.'
         required: false
         default: ''
+      flavor:
+        description: 'Build flavor: cpu (fast CI) or amd64 (full GPU image)'
+        required: false
+        default: 'cpu'
   schedule:
     - cron: '0 3 * * *'
 
@@ -25,6 +34,7 @@ jobs:
     outputs:
       upstream_tag:   ${{ steps.tag.outputs.tag }}
       already_synced: ${{ steps.check.outputs.already_synced }}
+      flavor:         ${{ steps.flavor.outputs.flavor }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -42,6 +52,17 @@ jobs:
               | jq -r .tag_name)
             echo "Detected upstream latest tag: $LATEST"
             echo "tag=$LATEST" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Resolve build flavor
+        id: flavor
+        run: |
+          # manual dispatch: use input; push/schedule: always cpu
+          INPUT_FLAVOR="${{ github.event.inputs.flavor }}"
+          if [ -n "$INPUT_FLAVOR" ]; then
+            echo "flavor=$INPUT_FLAVOR" >> "$GITHUB_OUTPUT"
+          else
+            echo "flavor=cpu" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Check if already synced
@@ -100,7 +121,15 @@ jobs:
           git push origin "${TAG}-local" --force
 
   # ─────────────────────────────────────────────
-  # 3. Сборка Docker образа (GPU: CUDA 12 + CUDA 13 + Vulkan)
+  # 3. Сборка Docker образа
+  #
+  # CI (push/schedule): FLAVOR=cpu → только CPU stage
+  #   Время сборки: ~15 мин на ubuntu-latest
+  #   Образ содержит: ollama binary + CPU inference lib
+  #
+  # Manual dispatch с flavor=amd64: полный GPU образ
+  #   Время: ~2-3 ч (CUDA 12 + CUDA 13 + Vulkan)
+  #   Рекомендуется запускать на self-hosted runner
   # ─────────────────────────────────────────────
   docker-build:
     runs-on: ubuntu-latest
@@ -117,13 +146,13 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build GPU image (CUDA 12 + CUDA 13 + Vulkan + CPU)
+      - name: Build image (flavor=${{ needs.resolve-upstream.outputs.flavor }})
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: Dockerfile
+          file: Dockerfile.secure
           build-args: |
-            FLAVOR=amd64
+            FLAVOR=${{ needs.resolve-upstream.outputs.flavor }}
           push: false
           load: true
           tags: |
@@ -152,6 +181,10 @@ jobs:
 
   # ─────────────────────────────────────────────
   # 4. Сканирование безопасности (Trivy)
+  #
+  # Финальный образ ubuntu:24.04 + apt-get upgrade.
+  # Блокируем только FIXABLE CVE — unfixed CVE в AL8
+  # build-стадиях в финальный образ не попадают.
   # ─────────────────────────────────────────────
   security-scan:
     runs-on: ubuntu-latest
@@ -168,6 +201,7 @@ jobs:
       - name: Load Docker image
         run: docker load < /tmp/ollama-image.tar.gz
 
+      # Шаг 1: полный SARIF — все CVE видны в Security tab (не блокирует)
       - name: Trivy scan — SARIF (все CVE для Security tab)
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
         with:
@@ -185,6 +219,7 @@ jobs:
           sarif_file: trivy-results.sarif
           category: trivy-docker
 
+      # Шаг 2: блокирующий — только fixable CVE
       - name: Trivy scan — block on fixable CRITICAL/HIGH
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
         with:
@@ -221,7 +256,7 @@ jobs:
           username: ${{ env.DOCKER_USER }}
           password: ${{ secrets.DH_TOKEN }}
 
-      - name: Tag and push to Docker Hub
+      - name: Push to Docker Hub
         env:
           TAG: ${{ needs.resolve-upstream.outputs.upstream_tag }}
         run: |
@@ -232,6 +267,7 @@ jobs:
 
   # ─────────────────────────────────────────────
   # 6. Smoke-тест образа с Docker Hub
+  #    Тестируем образ скачанный с DockerHub (не локальный кэш)
   # ─────────────────────────────────────────────
   smoke-test:
     runs-on: ubuntu-latest
@@ -250,9 +286,9 @@ jobs:
           TAG: ${{ needs.resolve-upstream.outputs.upstream_tag }}
         run: |
           docker pull "${{ env.DOCKER_IMAGE }}:${TAG}"
-          echo "✅ Pull from Docker Hub: ${{ env.DOCKER_IMAGE }}:${TAG}"
+          echo "✅ Pulled ${{ env.DOCKER_IMAGE }}:${TAG} from Docker Hub"
 
-      - name: Smoke test — ollama version
+      - name: Smoke test — ollama --version
         env:
           TAG: ${{ needs.resolve-upstream.outputs.upstream_tag }}
         run: |
@@ -262,32 +298,30 @@ jobs:
       - name: Smoke test — HTTP health check
         env:
           TAG: ${{ needs.resolve-upstream.outputs.upstream_tag }}
-          DOCKER_IMAGE: ${{ env.DOCKER_IMAGE }}
         run: |
           docker run -d --name ollama-test \
             -p 11434:11434 \
             -e OLLAMA_HOST=0.0.0.0 \
-            "${DOCKER_IMAGE}:${TAG}"
+            "${{ env.DOCKER_IMAGE }}:${TAG}"
 
           echo "Waiting for ollama HTTP on :11434 ..."
           for i in $(seq 1 30); do
-            HTTP_CODE=$(curl -so /dev/null -w '%{http_code}' http://localhost:11434/ 2>/dev/null || echo "000")
-            if [ "$HTTP_CODE" = "200" ]; then
-              echo "✅ HTTP 200 received on attempt $i"
+            HTTP=$(curl -so /dev/null -w '%{http_code}' http://localhost:11434/ 2>/dev/null || echo "000")
+            if [ "$HTTP" = "200" ]; then
+              echo "✅ HTTP 200 on attempt $i"
               docker stop ollama-test || true
               exit 0
             fi
-            echo "[$i/30] HTTP $HTTP_CODE — waiting 3s..."
+            echo "[$i/30] HTTP $HTTP — waiting 3s..."
             sleep 3
           done
-
-          echo "❌ Timeout — ollama did not respond with HTTP 200"
+          echo "❌ Timeout — no HTTP 200"
           docker logs ollama-test || true
           docker stop ollama-test || true
           exit 1
 
   # ─────────────────────────────────────────────
-  # 7. Итог: SUCCESS только если security + test ✅
+  # 7. Итог: SUCCESS только если security + smoke-test ✅
   # ─────────────────────────────────────────────
   pipeline-success:
     runs-on: ubuntu-latest
@@ -301,14 +335,16 @@ jobs:
           SECURITY: ${{ needs.security-scan.result }}
           TEST:     ${{ needs.smoke-test.result }}
           TAG:      ${{ needs.resolve-upstream.outputs.upstream_tag }}
+          FLAVOR:   ${{ needs.resolve-upstream.outputs.flavor }}
         run: |
           echo "═══════════════════════════════════════"
           echo "  Tag        : $TAG"
+          echo "  Flavor     : $FLAVOR"
           echo "  Security   : $SECURITY"
           echo "  Smoke test : $TEST"
           echo "═══════════════════════════════════════"
           if [ "$SECURITY" = "success" ] && [ "$TEST" = "success" ]; then
-            echo "✅ SUCCESS — GPU image is secure and tested."
+            echo "✅ SUCCESS — image is secure and tested."
             exit 0
           else
             echo "❌ FAILURE — see failed jobs above."
