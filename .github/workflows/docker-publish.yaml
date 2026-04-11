@@ -13,9 +13,9 @@ on:
         required: false
         default: ''
       flavor:
-        description: 'Build flavor: cpu (fast CI) or amd64 (full GPU image)'
+        description: 'Build target: final-cpu (fast CI) or final-amd64 (full GPU image)'
         required: false
-        default: 'cpu'
+        default: 'final-cpu'
   schedule:
     - cron: '0 3 * * *'
 
@@ -25,16 +25,16 @@ env:
 
 jobs:
   # ─────────────────────────────────────────────
-  # 1. Получить последний стабильный тег из upstream
+  # 1. Получить последний стабильный тег upstream
   # ─────────────────────────────────────────────
   resolve-upstream:
     runs-on: ubuntu-latest
     permissions:
       contents: read
     outputs:
-      upstream_tag:   ${{ steps.tag.outputs.tag }}
+      upstream_tag: ${{ steps.tag.outputs.tag }}
       already_synced: ${{ steps.check.outputs.already_synced }}
-      flavor:         ${{ steps.flavor.outputs.flavor }}
+      build_target: ${{ steps.target.outputs.build_target }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -54,15 +54,15 @@ jobs:
             echo "tag=$LATEST" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Resolve build flavor
-        id: flavor
+      - name: Resolve build target
+        id: target
         run: |
-          # manual dispatch: use input; push/schedule: always cpu
-          INPUT_FLAVOR="${{ github.event.inputs.flavor }}"
-          if [ -n "$INPUT_FLAVOR" ]; then
-            echo "flavor=$INPUT_FLAVOR" >> "$GITHUB_OUTPUT"
+          # manual dispatch: use input; push/schedule: always final-cpu
+          INPUT_TARGET="${{ github.event.inputs.flavor }}"
+          if [ -n "$INPUT_TARGET" ]; then
+            echo "build_target=$INPUT_TARGET" >> "$GITHUB_OUTPUT"
           else
-            echo "flavor=cpu" >> "$GITHUB_OUTPUT"
+            echo "build_target=final-cpu" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Check if already synced
@@ -123,13 +123,13 @@ jobs:
   # ─────────────────────────────────────────────
   # 3. Сборка Docker образа
   #
-  # CI (push/schedule): FLAVOR=cpu → только CPU stage
-  #   Время сборки: ~15 мин на ubuntu-latest
-  #   Образ содержит: ollama binary + CPU inference lib
+  # ЦИ (push/schedule): target=final-cpu → только cpu-build + go-build
+  #   BuildKit не затрагивает cuda/vulkan стадии — они не
+  #   достижимы из final-cpu.
+  #   Время сборки: ~15 мин
   #
-  # Manual dispatch с flavor=amd64: полный GPU образ
+  # Manual dispatch с flavor=final-amd64: полный GPU образ
   #   Время: ~2-3 ч (CUDA 12 + CUDA 13 + Vulkan)
-  #   Рекомендуется запускать на self-hosted runner
   # ─────────────────────────────────────────────
   docker-build:
     runs-on: ubuntu-latest
@@ -146,13 +146,12 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build image (flavor=${{ needs.resolve-upstream.outputs.flavor }})
+      - name: Build image (target=${{ needs.resolve-upstream.outputs.build_target }})
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile.secure
-          build-args: |
-            FLAVOR=${{ needs.resolve-upstream.outputs.flavor }}
+          target: ${{ needs.resolve-upstream.outputs.build_target }}
           push: false
           load: true
           tags: |
@@ -181,10 +180,6 @@ jobs:
 
   # ─────────────────────────────────────────────
   # 4. Сканирование безопасности (Trivy)
-  #
-  # Финальный образ ubuntu:24.04 + apt-get upgrade.
-  # Блокируем только FIXABLE CVE — unfixed CVE в AL8
-  # build-стадиях в финальный образ не попадают.
   # ─────────────────────────────────────────────
   security-scan:
     runs-on: ubuntu-latest
@@ -201,7 +196,6 @@ jobs:
       - name: Load Docker image
         run: docker load < /tmp/ollama-image.tar.gz
 
-      # Шаг 1: полный SARIF — все CVE видны в Security tab (не блокирует)
       - name: Trivy scan — SARIF (все CVE для Security tab)
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
         with:
@@ -219,7 +213,6 @@ jobs:
           sarif_file: trivy-results.sarif
           category: trivy-docker
 
-      # Шаг 2: блокирующий — только fixable CVE
       - name: Trivy scan — block on fixable CRITICAL/HIGH
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
         with:
@@ -267,7 +260,6 @@ jobs:
 
   # ─────────────────────────────────────────────
   # 6. Smoke-тест образа с Docker Hub
-  #    Тестируем образ скачанный с DockerHub (не локальный кэш)
   # ─────────────────────────────────────────────
   smoke-test:
     runs-on: ubuntu-latest
@@ -335,11 +327,11 @@ jobs:
           SECURITY: ${{ needs.security-scan.result }}
           TEST:     ${{ needs.smoke-test.result }}
           TAG:      ${{ needs.resolve-upstream.outputs.upstream_tag }}
-          FLAVOR:   ${{ needs.resolve-upstream.outputs.flavor }}
+          TARGET:   ${{ needs.resolve-upstream.outputs.build_target }}
         run: |
           echo "═══════════════════════════════════════"
           echo "  Tag        : $TAG"
-          echo "  Flavor     : $FLAVOR"
+          echo "  Target     : $TARGET"
           echo "  Security   : $SECURITY"
           echo "  Smoke test : $TEST"
           echo "═══════════════════════════════════════"
