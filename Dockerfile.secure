@@ -62,7 +62,7 @@ RUN curl -fsSL \
 ENV LDFLAGS=-s
 
 # ── CPU inference library ──────────────────────────────────────────────────
-FROM base AS cpu
+FROM base AS cpu-build
 RUN dnf install -y gcc-toolset-11-gcc gcc-toolset-11-gcc-c++ \
     && dnf clean all
 ENV PATH=/opt/rh/gcc-toolset-11/root/usr/bin:$PATH
@@ -167,12 +167,11 @@ RUN curl -fsSL https://golang.org/dl/go$(awk '/^go/ { print $2 }' go.mod).linux-
 ENV PATH=/usr/local/go/bin:$PATH
 RUN go mod download
 COPY . .
-ARG GOFLAGS="'-ldflags=-w -s'"
 ENV CGO_ENABLED=1
 ARG CGO_CFLAGS
 ARG CGO_CXXFLAGS
 RUN --mount=type=cache,target=/root/.cache/go-build \
-    go build -trimpath -buildmode=pie -o /bin/ollama .
+    go build -trimpath -buildmode=pie -ldflags="-w -s" -o /bin/ollama .
 
 # ── Flavor archive stages ───────────────────────────────────────────────────
 FROM --platform=linux/amd64 scratch AS amd64
@@ -191,7 +190,7 @@ FROM scratch AS cpu
 
 # ── Archive: выбирает нужный flavor ────────────────────────────────────
 FROM ${FLAVOR} AS archive
-COPY --from=cpu-libs dist/lib/ollama /lib/ollama
+COPY --from=cpu-build dist/lib/ollama /lib/ollama
 COPY --from=build /bin/ollama /bin/ollama
 
 # ── Final image: ubuntu:24.04 + apt upgrade ───────────────────────────────
