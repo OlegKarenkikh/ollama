@@ -56,6 +56,9 @@ ENV LDFLAGS=-s
 
 # ── CPU inference library ─────────────────────────────────────────────────
 FROM base AS cpu-build
+RUN dnf install -y gcc-toolset-11-gcc gcc-toolset-11-gcc-c++ \
+    && dnf clean all
+ENV PATH=/opt/rh/gcc-toolset-11/root/usr/bin:$PATH
 WORKDIR /src
 ARG PARALLEL
 COPY CMakeLists.txt CMakePresets.json .
@@ -158,6 +161,9 @@ RUN --mount=type=cache,target=/root/.ccache \
 # ── Go binary (CGO, AlmaLinux 8 base) ───────────────────────────────────────
 FROM base AS build
 WORKDIR /go/src/github.com/ollama/ollama
+RUN dnf install -y gcc-toolset-11-gcc-c++ \
+    && dnf clean all
+ENV PATH=/opt/rh/gcc-toolset-11/root/usr/bin:$PATH
 COPY go.mod go.sum .
 RUN curl -fsSL https://golang.org/dl/go$(awk '/^go/ { print $2 }' go.mod).linux-$(case $(uname -m) in x86_64) echo amd64;; aarch64) echo arm64;; esac).tar.gz \
     | tar xz -C /usr/local
