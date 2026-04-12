@@ -2,28 +2,21 @@
 # vim: filetype=dockerfile
 # Dockerfile.secure — используется в CI (GitHub Actions)
 #
-# Сборка управляется через build-arg FLAVOR:
-#   FLAVOR=cpu   → CPU inference only  (CI default, ~15 min)
-#   FLAVOR=amd64 → CPU + CUDA 12 + CUDA 13 + Vulkan
-#   FLAVOR=arm64 → CPU + JetPack 5 + JetPack 6
-#   FLAVOR=rocm  → CPU + ROCm 6
-#
-# Архитектура проверена в e5c7dfe (рабочая сборка):
-# - Go собирается на AlmaLinux 8 base (есть все CGO headers)
-# - FLAVOR выбирает нужный archive-слой через ARG
-# - Финальный образ: ubuntu:24.04 + apt-get upgrade
+# Targets:
+#   --target=final-cpu   → CPU inference only      (CI default, ~15 min)
+#   --target=final-amd64 → CPU + CUDA 12/13 + Vulkan
+#   --target=final-arm64 → CPU + JetPack 5/6
+#   --target=final-rocm  → CPU + ROCm 6
 
-ARG FLAVOR=cpu
 ARG PARALLEL=8
 
 ARG ROCMVERSION=6.3.3
 ARG JETPACK5VERSION=r35.4.1
 ARG JETPACK6VERSION=r36.4.0
 ARG CMAKEVERSION=3.31.2
-ARG NINJAVERSION=1.12.1
 ARG VULKANVERSION=1.4.321.1
 
-# ── Build base: AlmaLinux 8 amd64 (ROCm + NVIDIA repo) ─────────────────────
+# ── Build base: AlmaLinux 8 amd64 ─────────────────────────────────────────────
 FROM --platform=linux/amd64 rocm/dev-almalinux-8:${ROCMVERSION}-complete AS base-amd64
 RUN yum install -y yum-utils \
     && yum-config-manager --add-repo \
@@ -61,7 +54,7 @@ RUN curl -fsSL \
     | tar xz -C /usr/local --strip-components 1
 ENV LDFLAGS=-s
 
-# ── CPU inference library ──────────────────────────────────────────────────
+# ── CPU inference library ─────────────────────────────────────────────────
 FROM base AS cpu-build
 RUN dnf install -y gcc-toolset-11-gcc gcc-toolset-11-gcc-c++ \
     && dnf clean all
@@ -124,8 +117,8 @@ RUN --mount=type=cache,target=/root/.ccache \
     && cmake --build --parallel ${PARALLEL} --preset 'Vulkan' \
     && cmake --install build --component Vulkan --strip --parallel ${PARALLEL}
 
-# ── JetPack 5 ──────────────────────────────────────────────────────────────
-FROM --platform=linux/arm64 nvcr.io/nvidia/l4t-jetpack:${JETPACK5VERSION} AS jetpack-5
+# ── JetPack 5 (arm64) ─────────────────────────────────────────────────────────
+FROM --platform=${BUILDPLATFORM:-linux/arm64} nvcr.io/nvidia/l4t-jetpack:${JETPACK5VERSION} AS jetpack-5
 ARG CMAKEVERSION
 RUN apt-get update && apt-get install -y curl ccache \
     && apt-get upgrade -y \
@@ -141,8 +134,8 @@ RUN --mount=type=cache,target=/root/.ccache \
     && cmake --build --parallel ${PARALLEL} --preset 'JetPack 5' \
     && cmake --install build --component CUDA --strip --parallel ${PARALLEL}
 
-# ── JetPack 6 ──────────────────────────────────────────────────────────────
-FROM --platform=linux/arm64 nvcr.io/nvidia/l4t-jetpack:${JETPACK6VERSION} AS jetpack-6
+# ── JetPack 6 (arm64) ─────────────────────────────────────────────────────────
+FROM --platform=${BUILDPLATFORM:-linux/arm64} nvcr.io/nvidia/l4t-jetpack:${JETPACK6VERSION} AS jetpack-6
 ARG CMAKEVERSION
 RUN apt-get update && apt-get install -y curl ccache \
     && apt-get upgrade -y \
@@ -158,11 +151,11 @@ RUN --mount=type=cache,target=/root/.ccache \
     && cmake --build --parallel ${PARALLEL} --preset 'JetPack 6' \
     && cmake --install build --component CUDA --strip --parallel ${PARALLEL}
 
-# ── Go binary (AlmaLinux 8 base — has all CGO headers) ─────────────────────
+# ── Go binary (CGO, AlmaLinux 8 base) ───────────────────────────────────────
 FROM base AS build
 WORKDIR /go/src/github.com/ollama/ollama
 COPY go.mod go.sum .
-RUN curl -fsSL https://golang.org/dl/go$(awk '/^go/ { print $2 }' go.mod).linux-$(case $(uname -m) in x86_64) echo amd64 ;; aarch64) echo arm64 ;; esac).tar.gz \
+RUN curl -fsSL https://golang.org/dl/go$(awk '/^go/ { print $2 }' go.mod).linux-$(case $(uname -m) in x86_64) echo amd64;; aarch64) echo arm64;; esac).tar.gz \
     | tar xz -C /usr/local
 ENV PATH=/usr/local/go/bin:$PATH
 RUN go mod download
@@ -173,28 +166,12 @@ ARG CGO_CXXFLAGS
 RUN --mount=type=cache,target=/root/.cache/go-build \
     go build -trimpath -buildmode=pie -ldflags="-w -s" -o /bin/ollama .
 
-# ── Flavor archive stages ───────────────────────────────────────────────────
-FROM --platform=linux/amd64 scratch AS amd64
-COPY --from=cuda-12 dist/lib/ollama /lib/ollama/
-COPY --from=cuda-13 dist/lib/ollama /lib/ollama/
-COPY --from=vulkan  dist/lib/ollama /lib/ollama/
+# ───────────────────────────────────────────────────────────────────────────
+# FINAL TARGETS  (used via --target=<name>)
+# ───────────────────────────────────────────────────────────────────────────
 
-FROM --platform=linux/arm64 scratch AS arm64
-COPY --from=jetpack-5 dist/lib/ollama/ /lib/ollama/
-COPY --from=jetpack-6 dist/lib/ollama/ /lib/ollama/
-
-FROM scratch AS rocm
-COPY --from=rocm-6 dist/lib/ollama /lib/ollama
-
-FROM scratch AS cpu
-
-# ── Archive: выбирает нужный flavor ────────────────────────────────────
-FROM ${FLAVOR} AS archive
-COPY --from=cpu-build dist/lib/ollama /lib/ollama
-COPY --from=build /bin/ollama /bin/ollama
-
-# ── Final image: ubuntu:24.04 + apt upgrade ───────────────────────────────
-FROM ubuntu:24.04
+# ── final-cpu: CPU only (~15 min, CI default) ───────────────────────────────
+FROM ubuntu:24.04 AS final-cpu
 RUN apt-get update \
     && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends \
@@ -202,8 +179,86 @@ RUN apt-get update \
        libgcc-s1 libstdc++6 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=archive /bin/ollama /usr/bin/ollama
-COPY --from=archive /lib/ollama /usr/lib/ollama
+COPY --from=build     /bin/ollama          /usr/bin/ollama
+COPY --from=cpu-build dist/lib/ollama      /usr/lib/ollama/
+ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ENV LD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/lib/ollama
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV OLLAMA_HOST=0.0.0.0:11434
+EXPOSE 11434
+RUN groupadd -r ollama && useradd -r -g ollama -s /sbin/nologin ollama \
+    && mkdir -p /home/ollama \
+    && chown -R ollama:ollama /home/ollama /usr/lib/ollama /usr/bin/ollama
+USER ollama
+ENTRYPOINT ["/usr/bin/ollama"]
+CMD ["serve"]
+
+# ── final-amd64: CPU + CUDA 12/13 + Vulkan ───────────────────────────────
+FROM ubuntu:24.04 AS final-amd64
+RUN apt-get update \
+    && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends \
+       ca-certificates libvulkan1 openssl libssl3 \
+       libgcc-s1 libstdc++6 \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build     /bin/ollama          /usr/bin/ollama
+COPY --from=cpu-build dist/lib/ollama      /usr/lib/ollama/
+COPY --from=cuda-12   dist/lib/ollama      /usr/lib/ollama/
+COPY --from=cuda-13   dist/lib/ollama      /usr/lib/ollama/
+COPY --from=vulkan    dist/lib/ollama      /usr/lib/ollama/
+ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ENV LD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/lib/ollama
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV OLLAMA_HOST=0.0.0.0:11434
+EXPOSE 11434
+RUN groupadd -r ollama && useradd -r -g ollama -s /sbin/nologin ollama \
+    && mkdir -p /home/ollama \
+    && chown -R ollama:ollama /home/ollama /usr/lib/ollama /usr/bin/ollama
+USER ollama
+ENTRYPOINT ["/usr/bin/ollama"]
+CMD ["serve"]
+
+# ── final-arm64: CPU + JetPack 5/6 ──────────────────────────────────────────
+FROM ubuntu:24.04 AS final-arm64
+RUN apt-get update \
+    && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends \
+       ca-certificates libvulkan1 openssl libssl3 \
+       libgcc-s1 libstdc++6 \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build     /bin/ollama          /usr/bin/ollama
+COPY --from=cpu-build dist/lib/ollama      /usr/lib/ollama/
+COPY --from=jetpack-5 dist/lib/ollama      /usr/lib/ollama/
+COPY --from=jetpack-6 dist/lib/ollama      /usr/lib/ollama/
+ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ENV LD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/lib/ollama
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV OLLAMA_HOST=0.0.0.0:11434
+EXPOSE 11434
+RUN groupadd -r ollama && useradd -r -g ollama -s /sbin/nologin ollama \
+    && mkdir -p /home/ollama \
+    && chown -R ollama:ollama /home/ollama /usr/lib/ollama /usr/bin/ollama
+USER ollama
+ENTRYPOINT ["/usr/bin/ollama"]
+CMD ["serve"]
+
+# ── final-rocm: CPU + ROCm 6 ────────────────────────────────────────────────
+FROM ubuntu:24.04 AS final-rocm
+RUN apt-get update \
+    && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends \
+       ca-certificates libvulkan1 openssl libssl3 \
+       libgcc-s1 libstdc++6 \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build     /bin/ollama          /usr/bin/ollama
+COPY --from=cpu-build dist/lib/ollama      /usr/lib/ollama/
+COPY --from=rocm-6    dist/lib/ollama      /usr/lib/ollama/
 ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ENV LD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/lib/ollama
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
