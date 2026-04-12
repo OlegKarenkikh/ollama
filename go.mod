@@ -2,6 +2,8 @@ module github.com/ollama/ollama
 
 go 1.24.11
 
+toolchain go1.24.11
+
 require (
 	github.com/TheTitanrain/w32 v0.0.0-20180517000239-4f5cfb03fabf
 	github.com/containerd/console v1.0.5
