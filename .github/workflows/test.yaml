@@ -34,9 +34,10 @@ jobs:
           echo changed=$(changed 'llama/llama.cpp/**/*' 'ml/backend/ggml/ggml/**/*' '.github/**/*') | tee -a $GITHUB_OUTPUT
           echo vendorsha=$(make -f Makefile.sync print-base) | tee -a $GITHUB_OUTPUT
 
+  # Upstream-only: requires self-hosted 'linux' runners with GPU support
   linux:
+    if: github.repository == 'ollama/ollama'
     needs: [changes]
-    if: needs.changes.outputs.changed == 'True'
     strategy:
       matrix:
         include:
@@ -95,9 +96,10 @@ jobs:
           cmake --preset "${{ matrix.preset }}" ${{ matrix.flags }}
           cmake --build --preset "${{ matrix.preset }}" --parallel
 
+  # Upstream-only: requires self-hosted 'windows' runners with GPU/SDK support
   windows:
+    if: github.repository == 'ollama/ollama'
     needs: [changes]
-    if: needs.changes.outputs.changed == 'True'
     strategy:
       matrix:
         include:
@@ -240,7 +242,7 @@ jobs:
       - name: check that 'go mod tidy' is clean
         run: go mod tidy --diff || (echo "Please run 'go mod tidy'." && exit 1)
 
-  # Upstream-only: requires upstream runners, full app/ui, and Makefile.sync env
+  # Upstream-only: requires upstream runners and full app/ui env
   test:
     if: github.repository == 'ollama/ollama'
     strategy:
