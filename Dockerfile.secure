@@ -56,17 +56,17 @@ ENV LDFLAGS=-s
 
 # ── CPU inference library ─────────────────────────────────────────────────
 FROM base AS cpu-build
+WORKDIR /src
 RUN dnf install -y gcc-toolset-11-gcc gcc-toolset-11-gcc-c++ \
     && dnf clean all
 ENV PATH=/opt/rh/gcc-toolset-11/root/usr/bin:$PATH
-WORKDIR /src
 ARG PARALLEL
 COPY CMakeLists.txt CMakePresets.json .
 COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
 RUN --mount=type=cache,target=/root/.ccache \
     cmake --preset 'CPU' -B /src/build \
     && cmake --build /src/build --parallel ${PARALLEL} \
-    && cmake --install /src/build --component CPU --prefix /src/dist --strip
+    && cmake --install /src/build --component CPU --prefix /src/dist --strip --parallel ${PARALLEL}
 
 # ── CUDA 12 ────────────────────────────────────────────────────────────────
 FROM base AS cuda-12
@@ -81,7 +81,7 @@ COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
 RUN --mount=type=cache,target=/root/.ccache \
     cmake --preset 'CUDA 12' -B /src/build \
     && cmake --build /src/build --parallel ${PARALLEL} \
-    && cmake --install /src/build --component CUDA --prefix /src/dist --strip
+    && cmake --install /src/build --component CUDA --prefix /src/dist --strip --parallel ${PARALLEL}
 
 # ── CUDA 13 ────────────────────────────────────────────────────────────────
 FROM base AS cuda-13
@@ -96,7 +96,7 @@ COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
 RUN --mount=type=cache,target=/root/.ccache \
     cmake --preset 'CUDA 13' -B /src/build \
     && cmake --build /src/build --parallel ${PARALLEL} \
-    && cmake --install /src/build --component CUDA --prefix /src/dist --strip
+    && cmake --install /src/build --component CUDA --prefix /src/dist --strip --parallel ${PARALLEL}
 
 # ── ROCm 6 ────────────────────────────────────────────────────────────────
 FROM base AS rocm-6
@@ -108,8 +108,8 @@ COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
 RUN --mount=type=cache,target=/root/.ccache \
     cmake --preset 'ROCm 6' -B /src/build \
     && cmake --build /src/build --parallel ${PARALLEL} \
-    && cmake --install /src/build --component HIP --prefix /src/dist --strip
-RUN bash -c 'rm -f /src/dist/lib/ollama/rocm/rocblas/library/*gfx90[06]*'
+    && cmake --install /src/build --component HIP --prefix /src/dist --strip --parallel ${PARALLEL}
+RUN bash -c 'set -eu; rm -f /src/dist/lib/ollama/rocm/rocblas/library/*gfx90[06]*'
 
 # ── Vulkan ─────────────────────────────────────────────────────────────────
 FROM base AS vulkan
@@ -120,7 +120,7 @@ ARG PARALLEL
 RUN --mount=type=cache,target=/root/.ccache \
     cmake --preset 'Vulkan' -B /src/build \
     && cmake --build /src/build --parallel ${PARALLEL} \
-    && cmake --install /src/build --component Vulkan --prefix /src/dist --strip
+    && cmake --install /src/build --component Vulkan --prefix /src/dist --strip --parallel ${PARALLEL}
 
 # ── JetPack 5 (arm64) ─────────────────────────────────────────────────────────
 FROM --platform=${BUILDPLATFORM:-linux/arm64} nvcr.io/nvidia/l4t-jetpack:${JETPACK5VERSION} AS jetpack-5
@@ -138,7 +138,7 @@ ARG PARALLEL
 RUN --mount=type=cache,target=/root/.ccache \
     cmake --preset 'JetPack 5' -B /src/build \
     && cmake --build /src/build --parallel ${PARALLEL} \
-    && cmake --install /src/build --component CUDA --prefix /src/dist --strip
+    && cmake --install /src/build --component CUDA --prefix /src/dist --strip --parallel ${PARALLEL}
 
 # ── JetPack 6 (arm64) ─────────────────────────────────────────────────────────
 FROM --platform=${BUILDPLATFORM:-linux/arm64} nvcr.io/nvidia/l4t-jetpack:${JETPACK6VERSION} AS jetpack-6
@@ -156,12 +156,12 @@ ARG PARALLEL
 RUN --mount=type=cache,target=/root/.ccache \
     cmake --preset 'JetPack 6' -B /src/build \
     && cmake --build /src/build --parallel ${PARALLEL} \
-    && cmake --install /src/build --component CUDA --prefix /src/dist --strip
+    && cmake --install /src/build --component CUDA --prefix /src/dist --strip --parallel ${PARALLEL}
 
 # ── Go binary (CGO, AlmaLinux 8 base) ───────────────────────────────────────
 FROM base AS build
 WORKDIR /go/src/github.com/ollama/ollama
-RUN dnf install -y gcc-toolset-11-gcc-c++ \
+RUN dnf install -y gcc-toolset-11-gcc gcc-toolset-11-gcc-c++ \
     && dnf clean all
 ENV PATH=/opt/rh/gcc-toolset-11/root/usr/bin:$PATH
 ENV CC=/opt/rh/gcc-toolset-11/root/usr/bin/gcc
