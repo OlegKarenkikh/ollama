@@ -183,14 +183,16 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 # ───────────────────────────────────────────────────────────────────────────
 
 # ── final-cpu: CPU only (~15 min, CI default) ───────────────────────────────
-FROM ubuntu:24.04 AS final-cpu
-RUN apt-get update \
-    && apt-get upgrade -y \
-    && apt-get install -y --no-install-recommends \
-       ca-certificates libvulkan1 openssl libssl3 \
-       libgcc-s1 libstdc++6 \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+FROM almalinux:10 AS final-cpu
+RUN dnf install -y \
+        ca-certificates \
+        openssl \
+        openssl-libs \
+        mesa-vulkan-drivers \
+        libstdc++ \
+    && dnf update -y \
+    && dnf clean all \
+    && rm -rf /var/cache/dnf
 COPY --from=build     /bin/ollama            /usr/bin/ollama
 COPY --from=cpu-build /src/dist/lib/ollama   /usr/lib/ollama/
 ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -207,14 +209,16 @@ ENTRYPOINT ["/usr/bin/ollama"]
 CMD ["serve"]
 
 # ── final-amd64: CPU + CUDA 12/13 + Vulkan ───────────────────────────────
-FROM ubuntu:24.04 AS final-amd64
-RUN apt-get update \
-    && apt-get upgrade -y \
-    && apt-get install -y --no-install-recommends \
-       ca-certificates libvulkan1 openssl libssl3 \
-       libgcc-s1 libstdc++6 \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+FROM almalinux:10 AS final-amd64
+RUN dnf install -y \
+        ca-certificates \
+        openssl \
+        openssl-libs \
+        mesa-vulkan-drivers \
+        libstdc++ \
+    && dnf update -y \
+    && dnf clean all \
+    && rm -rf /var/cache/dnf
 COPY --from=build     /bin/ollama            /usr/bin/ollama
 COPY --from=cpu-build /src/dist/lib/ollama   /usr/lib/ollama/
 COPY --from=cuda-12   /src/dist/lib/ollama   /usr/lib/ollama/
@@ -234,14 +238,16 @@ ENTRYPOINT ["/usr/bin/ollama"]
 CMD ["serve"]
 
 # ── final-arm64: CPU + JetPack 5/6 ──────────────────────────────────────────
-FROM ubuntu:24.04 AS final-arm64
-RUN apt-get update \
-    && apt-get upgrade -y \
-    && apt-get install -y --no-install-recommends \
-       ca-certificates libvulkan1 openssl libssl3 \
-       libgcc-s1 libstdc++6 \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+FROM almalinux:10 AS final-arm64
+RUN dnf install -y \
+        ca-certificates \
+        openssl \
+        openssl-libs \
+        mesa-vulkan-drivers \
+        libstdc++ \
+    && dnf update -y \
+    && dnf clean all \
+    && rm -rf /var/cache/dnf
 COPY --from=build     /bin/ollama            /usr/bin/ollama
 COPY --from=cpu-build /src/dist/lib/ollama   /usr/lib/ollama/
 COPY --from=jetpack-5 /src/dist/lib/ollama   /usr/lib/ollama/
@@ -260,14 +266,16 @@ ENTRYPOINT ["/usr/bin/ollama"]
 CMD ["serve"]
 
 # ── final-rocm: CPU + ROCm 6 ────────────────────────────────────────────────
-FROM ubuntu:24.04 AS final-rocm
-RUN apt-get update \
-    && apt-get upgrade -y \
-    && apt-get install -y --no-install-recommends \
-       ca-certificates libvulkan1 openssl libssl3 \
-       libgcc-s1 libstdc++6 \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+FROM almalinux:10 AS final-rocm
+RUN dnf install -y \
+        ca-certificates \
+        openssl \
+        openssl-libs \
+        mesa-vulkan-drivers \
+        libstdc++ \
+    && dnf update -y \
+    && dnf clean all \
+    && rm -rf /var/cache/dnf
 COPY --from=build     /bin/ollama            /usr/bin/ollama
 COPY --from=cpu-build /src/dist/lib/ollama   /usr/lib/ollama/
 COPY --from=rocm-6    /src/dist/lib/ollama   /usr/lib/ollama/
