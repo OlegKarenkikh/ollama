@@ -1,0 +1,62 @@
+# syntax=docker/dockerfile:1
+ARG PARALLEL=4
+ARG CMAKEVERSION=3.31.2
+
+FROM almalinux:9 AS base
+ARG CMAKEVERSION
+RUN dnf install -y epel-release \
+ && dnf config-manager --set-enabled crb \
+ && dnf install -y make ninja-build wget ca-certificates \
+                   gcc-toolset-13-gcc gcc-toolset-13-gcc-c++ \
+                   gcc-toolset-13-binutils \
+ && dnf install -y --allowerasing curl \
+ && dnf update -y --security \
+ && dnf clean all \
+ && curl -fsSL https://github.com/Kitware/CMake/releases/download/v${CMAKEVERSION}/cmake-${CMAKEVERSION}-linux-$(uname -m).tar.gz \
+      | tar xz -C /usr/local --strip-components 1
+# Enable gcc-toolset-13 globally for all RUN layers
+ENV PATH=/opt/rh/gcc-toolset-13/root/usr/bin:/usr/local/bin:/usr/bin:/bin
+ENV LD_LIBRARY_PATH=/opt/rh/gcc-toolset-13/root/usr/lib64:/opt/rh/gcc-toolset-13/root/usr/lib
+ENV LDFLAGS=-s
+
+FROM base AS cpu-build
+WORKDIR /src
+ARG PARALLEL
+COPY CMakeLists.txt CMakePresets.json ./
+COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
+RUN --mount=type=cache,target=/root/.ccache \
+    cmake --preset CPU -B /src/build \
+ && cmake --build /src/build --parallel ${PARALLEL} \
+ && cmake --install /src/build --component CPU --prefix /src/dist --strip --parallel ${PARALLEL}
+
+FROM base AS go-build
+WORKDIR /go/src/github.com/ollama/ollama
+COPY go.mod go.sum ./
+RUN GOARCH=$(case $(uname -m) in x86_64) echo amd64;; aarch64) echo arm64;; esac) \
+ && GOVERSION=$(awk "/^go /{print \$2}" go.mod) \
+ && curl -fsSL https://golang.org/dl/go${GOVERSION}.linux-${GOARCH}.tar.gz | tar xz -C /usr/local
+ENV PATH=/usr/local/go/bin:/opt/rh/gcc-toolset-13/root/usr/bin:/usr/local/bin:/usr/bin:/bin
+RUN go mod download
+COPY . .
+ENV CGO_ENABLED=1
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    go build -trimpath -buildmode=pie \
+      -ldflags="-w -s -X github.com/ollama/ollama/version.Version=0.20.7" \
+      -o /bin/ollama .
+
+FROM ubuntu:24.04 AS final
+RUN apt-get update \
+ && apt-get upgrade -y \
+ && apt-get install -y --no-install-recommends ca-certificates libgcc-s1 libstdc++6 \
+ && apt-get clean && rm -rf /var/lib/apt/lists/*
+COPY --from=go-build /bin/ollama /usr/bin/ollama
+COPY --from=cpu-build /src/dist/lib/ollama /usr/lib/ollama/
+ENV LD_LIBRARY_PATH=/usr/lib/ollama
+ENV OLLAMA_HOST=0.0.0.0:11434
+EXPOSE 11434
+RUN groupadd -r ollama && useradd -r -g ollama -s /sbin/nologin ollama \
+ && mkdir -p /home/ollama/.ollama \
+ && chown -R ollama:ollama /home/ollama /usr/lib/ollama /usr/bin/ollama
+USER ollama
+ENTRYPOINT ["/usr/bin/ollama"]
+CMD ["serve"]
