@@ -82,9 +82,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # Public repo checkout without auth to avoid token/policy-related checkout failures.
-          token: ''
-          persist-credentials: false
+          # Use default credentials; empty token breaks checkout in hosted runners.
           fetch-depth: 0
 
       - name: Configure git
