@@ -82,6 +82,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          # Public repo checkout without auth to avoid token/policy-related checkout failures.
+          token: ''
+          persist-credentials: false
           fetch-depth: 0
 
       - name: Configure git
@@ -109,6 +112,7 @@ jobs:
         env:
           TAG: ${{ needs.resolve-upstream.outputs.upstream_tag }}
         run: |
+          git remote set-url origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
           git push origin main
           git tag -f "${TAG}-local"
           git push origin "${TAG}-local" --force
