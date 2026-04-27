@@ -83,8 +83,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          # Use ephemeral GitHub token to avoid failures from stale/invalid PATs
-          token: ${{ github.token }}
 
       - name: Configure git
         run: |
