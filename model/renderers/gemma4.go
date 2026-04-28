@@ -12,7 +12,8 @@ import (
 // <|turn>/<turn|> markers, <|"|> string delimiters, and <|tool>/
 // <|tool_call>/<|tool_response> tags for function calling.
 type Gemma4Renderer struct {
-	useImgTags bool
+	useImgTags          bool
+	emptyBlockOnNothink bool
 }
 
 const (
