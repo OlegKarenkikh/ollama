@@ -57,6 +57,7 @@ func TestIntegrationLookup(t *testing.T) {
 		{"kimi", "kimi", true, "Kimi Code CLI"},
 		{"droid", "droid", true, "Droid"},
 		{"opencode", "opencode", true, "OpenCode"},
+		{"pool", "pool", true, "Pool"},
 		{"unknown integration", "unknown", false, ""},
 		{"empty string", "", false, ""},
 	}
@@ -1553,7 +1554,19 @@ func TestListIntegrationInfos(t *testing.T) {
 		for _, info := range infos {
 			got = append(got, info.Name)
 		}
-		if diff := compareStrings(got, integrationOrder); diff != "" {
+
+		want := append([]string(nil), integrationOrder...)
+		if poolsideGOOS == "windows" {
+			filtered := make([]string, 0, len(want))
+			for _, name := range want {
+				if name != "pool" {
+					filtered = append(filtered, name)
+				}
+			}
+			want = filtered
+		}
+
+		if diff := compareStrings(got, want); diff != "" {
 			t.Fatalf("launcher integration order mismatch: %s", diff)
 		}
 	})
@@ -1643,7 +1656,7 @@ func TestBuildModelList_Descriptions(t *testing.T) {
 
 		for _, item := range items {
 			if item.Name == "qwen3.5" {
-				if !strings.Contains(item.Description, "~11GB") {
+				if !strings.Contains(item.Description, "~14GB") {
 					t.Errorf("not-installed qwen3.5 should show VRAM hint, got %q", item.Description)
 				}
 				return
@@ -1660,7 +1673,7 @@ func TestBuildModelList_Descriptions(t *testing.T) {
 
 		for _, item := range items {
 			if item.Name == "qwen3.5" {
-				if strings.Contains(item.Description, "~11GB") {
+				if strings.Contains(item.Description, "~14GB") {
 					t.Errorf("installed qwen3.5 should not show VRAM hint, got %q", item.Description)
 				}
 				return
