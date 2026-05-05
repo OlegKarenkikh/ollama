@@ -12,7 +12,7 @@ RUN dnf install -y epel-release \
  && dnf install -y make ninja-build wget ca-certificates \
                    gcc-toolset-13-gcc gcc-toolset-13-gcc-c++ \
                    gcc-toolset-13-binutils \
- && dnf install -y --allowerasing curl \
+                   curl \
  && dnf update -y --security \
  && dnf clean all \
  && curl -fsSL https://github.com/Kitware/CMake/releases/download/v${CMAKEVERSION}/cmake-${CMAKEVERSION}-linux-$(uname -m).tar.gz \
@@ -25,7 +25,7 @@ FROM base AS cpu-build
 WORKDIR /src
 ARG PARALLEL
 COPY CMakeLists.txt CMakePresets.json ./
-COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
+COPY ml/backend/ggml/ggml/ ml/backend/ggml/ggml/
 RUN --mount=type=cache,target=/root/.ccache \
     cmake --preset CPU -B /src/build \
  && cmake --build /src/build --parallel ${PARALLEL} \
@@ -59,7 +59,8 @@ RUN --mount=type=cache,target=/root/.ccache \
 FROM base AS vulkan-build
 ARG VULKANVERSION
 ARG PARALLEL
-RUN dnf install -y git python3 python3-pip xz && dnf clean all
+RUN dnf install -y git python3 python3-pip xz \
+ && dnf clean all
 RUN wget -q "https://sdk.lunarg.com/sdk/download/${VULKANVERSION}/linux/vulkansdk-linux-x86_64-${VULKANVERSION}.tar.xz" -O /tmp/vk.tar.xz \
  && tar xf /tmp/vk.tar.xz -C /tmp \
  && /tmp/${VULKANVERSION}/vulkansdk -j 4 vulkan-headers glslang shaderc spirv-tools spirv-headers \
@@ -72,7 +73,7 @@ ENV VULKAN_SDK=/usr/local
 ENV PATH=/usr/local/bin:/opt/rh/gcc-toolset-13/root/usr/bin:/usr/bin:/bin
 WORKDIR /src
 COPY CMakeLists.txt CMakePresets.json ./
-COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
+COPY ml/backend/ggml/ggml/ ml/backend/ggml/ggml/
 RUN --mount=type=cache,target=/root/.ccache \
     cmake --preset Vulkan -B /src/build \
  && cmake --build /src/build --parallel ${PARALLEL} \
@@ -81,12 +82,12 @@ RUN --mount=type=cache,target=/root/.ccache \
 FROM base AS go-build
 WORKDIR /go/src/github.com/ollama/ollama
 COPY go.mod go.sum ./
+COPY . .
 RUN GOARCH=$(case $(uname -m) in x86_64) echo amd64;; aarch64) echo arm64;; esac) \
  && GOVERSION=$(awk "/^go /{print \$2}" go.mod) \
  && curl -fsSL https://golang.org/dl/go${GOVERSION}.linux-${GOARCH}.tar.gz | tar xz -C /usr/local
 ENV PATH=/usr/local/go/bin:/opt/rh/gcc-toolset-13/root/usr/bin:/usr/local/bin:/usr/bin:/bin
 RUN go mod download
-COPY . .
 ENV CGO_ENABLED=1
 RUN --mount=type=cache,target=/root/.cache/go-build \
     go build -trimpath -buildmode=pie \
