@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1
 # GPU: CPU + CUDA 12 + Vulkan
-ARG PARALLEL=4
+ARG PARALLEL=8
 ARG CMAKEVERSION=3.31.2
-ARG CUDA12VERSION=12.8
+ARG CUDA12VERSION=12.6
 ARG VULKANVERSION=1.4.321.1
 
 FROM almalinux:9 AS base
@@ -25,7 +25,7 @@ FROM base AS cpu-build
 WORKDIR /src
 ARG PARALLEL
 COPY CMakeLists.txt CMakePresets.json ./
-COPY ml/backend/ggml/ggml/ ml/backend/ggml/ggml/
+COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
 RUN --mount=type=cache,target=/root/.ccache \
     cmake --preset CPU -B /src/build \
  && cmake --build /src/build --parallel ${PARALLEL} \
@@ -43,9 +43,9 @@ RUN curl -fsSL https://developer.download.nvidia.com/compute/cuda/repos/ubuntu24
 RUN echo "deb [signed-by=/usr/share/keyrings/nvidia-cuda.gpg] https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/ /" \
     > /etc/apt/sources.list.d/cuda.list
 RUN apt-get update \
- && apt-get install -y --no-install-recommends cuda-nvcc-12-8 cuda-cudart-dev-12-8 libcublas-dev-12-8 \
+ && apt-get install -y --no-install-recommends cuda-nvcc-12-6 cuda-cudart-dev-12-6 libcublas-dev-12-6 \
  && apt-get clean && rm -rf /var/lib/apt/lists/*
-ENV PATH=/usr/local/cuda-12.8/bin:/usr/local/bin:/usr/bin:/bin
+ENV PATH=/usr/local/cuda-12.6/bin:/usr/local/bin:/usr/bin:/bin
 RUN curl -fsSL https://github.com/Kitware/CMake/releases/download/v${CMAKEVERSION}/cmake-${CMAKEVERSION}-linux-$(uname -m).tar.gz \
     | tar xz -C /usr/local --strip-components 1
 WORKDIR /src
@@ -73,7 +73,7 @@ ENV VULKAN_SDK=/usr/local
 ENV PATH=/usr/local/bin:/opt/rh/gcc-toolset-13/root/usr/bin:/usr/bin:/bin
 WORKDIR /src
 COPY CMakeLists.txt CMakePresets.json ./
-COPY ml/backend/ggml/ggml/ ml/backend/ggml/ggml/
+COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
 RUN --mount=type=cache,target=/root/.ccache \
     cmake --preset Vulkan -B /src/build \
  && cmake --build /src/build --parallel ${PARALLEL} \
@@ -91,7 +91,7 @@ RUN go mod download
 ENV CGO_ENABLED=1
 RUN --mount=type=cache,target=/root/.cache/go-build \
     go build -trimpath -buildmode=pie \
-      -ldflags="-w -s -X github.com/ollama/ollama/version.Version=0.20.7" \
+      -ldflags="-w -s" \
       -o /bin/ollama .
 
 FROM ubuntu:24.04 AS final
@@ -109,7 +109,7 @@ ENV NVIDIA_VISIBLE_DEVICES=all
 ENV OLLAMA_HOST=0.0.0.0:11434
 EXPOSE 11434
 RUN groupadd -r ollama && useradd -r -g ollama -s /sbin/nologin ollama \
- && mkdir -p /home/ollama/.ollama \
+ && mkdir -p /home/ollama \
  && chown -R ollama:ollama /home/ollama /usr/lib/ollama /usr/bin/ollama
 USER ollama
 ENTRYPOINT ["/usr/bin/ollama"]
