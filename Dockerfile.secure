@@ -1,21 +1,13 @@
 # syntax=docker/dockerfile:1
 # vim: filetype=dockerfile
 # Dockerfile.secure — используется в CI (GitHub Actions)
-#
-# Targets:
-#   --target=final-cpu   → CPU inference only      (CI default, ~15 min)
-#   --target=final-amd64 → CPU + CUDA 12 + Vulkan
-#   --target=final-arm64 → CPU + JetPack 6
-#   --target=final-rocm  → CPU + ROCm 6
 
 ARG PARALLEL=8
-
-ARG ROCMVERSION=6.3.0
+ARG ROCMVERSION=6.3.3
 ARG JETPACK6VERSION=r36.4.0
 ARG CMAKEVERSION=3.31.2
 ARG VULKANVERSION=1.4.321.1
 
-# ── Build base: AlmaLinux 9 amd64 ─────────────────────────────────────────────
 FROM --platform=linux/amd64 rocm/dev-almalinux-9:${ROCMVERSION}-complete AS base-amd64
 RUN dnf install -y yum-utils \
     && yum-config-manager --add-repo \
@@ -52,7 +44,6 @@ RUN curl -fsSL \
     | tar xz -C /usr/local --strip-components 1
 ENV LDFLAGS=-s
 
-# ── CPU inference library ─────────────────────────────────────────────────
 FROM base AS cpu-build
 WORKDIR /src
 RUN dnf install -y gcc-toolset-13-gcc gcc-toolset-13-gcc-c++ \
@@ -66,7 +57,6 @@ RUN --mount=type=cache,target=/root/.ccache \
     && cmake --build /src/build --parallel ${PARALLEL} \
     && cmake --install /src/build --component CPU --prefix /src/dist --strip --parallel ${PARALLEL}
 
-# ── CUDA 12 ────────────────────────────────────────────────────────────────
 FROM base AS cuda-12
 WORKDIR /src
 ARG CUDA12VERSION=12.6
@@ -81,20 +71,6 @@ RUN --mount=type=cache,target=/root/.ccache \
     && cmake --build /src/build --parallel ${PARALLEL} \
     && cmake --install /src/build --component CUDA --prefix /src/dist --strip --parallel ${PARALLEL}
 
-# ── ROCm 6 ────────────────────────────────────────────────────────────────
-FROM base AS rocm-6
-WORKDIR /src
-ENV PATH=/opt/rocm/hcc/bin:/opt/rocm/hip/bin:/opt/rocm/bin:/opt/rocm/hcc/bin:$PATH
-ARG PARALLEL
-COPY CMakeLists.txt CMakePresets.json ./
-COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
-RUN --mount=type=cache,target=/root/.ccache \
-    cmake --preset 'ROCm 6' -B /src/build \
-    && cmake --build /src/build --parallel ${PARALLEL} \
-    && cmake --install /src/build --component HIP --prefix /src/dist --strip --parallel ${PARALLEL}
-RUN bash -c 'set -eu; rm -f /src/dist/lib/ollama/rocm/rocblas/library/*gfx90[06]*'
-
-# ── Vulkan ─────────────────────────────────────────────────────────────────
 FROM base AS vulkan
 WORKDIR /src
 COPY CMakeLists.txt CMakePresets.json ./
@@ -105,25 +81,6 @@ RUN --mount=type=cache,target=/root/.ccache \
     && cmake --build /src/build --parallel ${PARALLEL} \
     && cmake --install /src/build --component Vulkan --prefix /src/dist --strip --parallel ${PARALLEL}
 
-# ── JetPack 6 (arm64) ─────────────────────────────────────────────────────────
-FROM --platform=${BUILDPLATFORM:-linux/arm64} nvcr.io/nvidia/l4t-jetpack:${JETPACK6VERSION} AS jetpack-6
-WORKDIR /src
-ARG CMAKEVERSION
-RUN apt-get update && apt-get install -y --no-install-recommends curl ccache \
-    && apt-get upgrade -y \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/* \
-    && curl -fsSL https://github.com/Kitware/CMake/releases/download/v${CMAKEVERSION}/cmake-${CMAKEVERSION}-linux-$(uname -m).tar.gz \
-       | tar xz -C /usr/local --strip-components 1
-COPY CMakeLists.txt CMakePresets.json ./
-COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
-ARG PARALLEL
-RUN --mount=type=cache,target=/root/.ccache \
-    cmake --preset 'JetPack 6' -B /src/build \
-    && cmake --build /src/build --parallel ${PARALLEL} \
-    && cmake --install /src/build --component CUDA --prefix /src/dist --strip --parallel ${PARALLEL}
-
-# ── Go binary (CGO, AlmaLinux 9 base) ───────────────────────────────────────
 FROM base AS build
 WORKDIR /go/src/github.com/ollama/ollama
 RUN dnf install -y gcc-toolset-13-gcc gcc-toolset-13-gcc-c++ \
@@ -138,16 +95,9 @@ ENV PATH=/usr/local/go/bin:$PATH
 RUN go mod download
 COPY . .
 ENV CGO_ENABLED=1
-ARG CGO_CFLAGS
-ARG CGO_CXXFLAGS
 RUN --mount=type=cache,target=/root/.cache/go-build \
     go build -trimpath -buildmode=pie -ldflags="-w -s" -o /bin/ollama .
 
-# ───────────────────────────────────────────────────────────────────────────
-# FINAL TARGETS
-# ───────────────────────────────────────────────────────────────────────────
-
-# ── final-cpu ──────────────────────────────────────────────────────────────
 FROM ubuntu:24.04 AS final-cpu
 RUN apt-get update \
     && apt-get upgrade -y \
@@ -169,7 +119,6 @@ USER ollama
 ENTRYPOINT ["/usr/bin/ollama"]
 CMD ["serve"]
 
-# ── final-amd64 ────────────────────────────────────────────────────────────
 FROM ubuntu:24.04 AS final-amd64
 RUN apt-get update \
     && apt-get upgrade -y \
@@ -186,29 +135,6 @@ ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ENV LD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/lib/ollama
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
 ENV NVIDIA_VISIBLE_DEVICES=all
-ENV OLLAMA_HOST=0.0.0.0:11434
-EXPOSE 11434
-RUN groupadd -r ollama && useradd -r -g ollama -s /sbin/nologin ollama \
-    && mkdir -p /home/ollama \
-    && chown -R ollama:ollama /home/ollama /usr/lib/ollama /usr/bin/ollama
-USER ollama
-ENTRYPOINT ["/usr/bin/ollama"]
-CMD ["serve"]
-
-# ── final-rocm ─────────────────────────────────────────────────────────────
-FROM ubuntu:24.04 AS final-rocm
-RUN apt-get update \
-    && apt-get upgrade -y \
-    && apt-get install -y --no-install-recommends \
-       ca-certificates libvulkan1 openssl libssl3 \
-       libgcc-s1 libstdc++6 \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
-COPY --from=build     /bin/ollama            /usr/bin/ollama
-COPY --from=cpu-build /src/dist/lib/ollama   /usr/lib/ollama/
-COPY --from=rocm-6    /src/dist/lib/ollama   /usr/lib/ollama/
-ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-ENV LD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/lib/ollama
 ENV OLLAMA_HOST=0.0.0.0:11434
 EXPOSE 11434
 RUN groupadd -r ollama && useradd -r -g ollama -s /sbin/nologin ollama \
