@@ -1,0 +1,3 @@
+FROM scratch
+COPY ollama_binary /ollama
+ENTRYPOINT ["/ollama"]
