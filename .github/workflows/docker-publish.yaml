@@ -7,10 +7,6 @@ on:
         description: 'Upstream ollama tag to sync (e.g. v0.6.5). Leave empty to auto-detect latest.'
         required: false
         default: ''
-      target:
-        description: 'Build target: final-cpu (fast CI) | final-amd64 (full GPU) | final-arm64 | final-rocm'
-        required: false
-        default: 'final-cpu'
   schedule:
     - cron: '0 3 * * *'
 
@@ -29,7 +25,6 @@ jobs:
     outputs:
       upstream_tag:   ${{ steps.tag.outputs.tag }}
       already_synced: ${{ steps.check.outputs.already_synced }}
-      build_target:   ${{ steps.target.outputs.build_target }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -47,16 +42,6 @@ jobs:
               | jq -r .tag_name)
             echo "Detected upstream latest tag: $LATEST"
             echo "tag=$LATEST" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Resolve build target
-        id: target
-        run: |
-          INPUT_TARGET="${{ github.event.inputs.target }}"
-          if [ -n "$INPUT_TARGET" ]; then
-            echo "build_target=$INPUT_TARGET" >> "$GITHUB_OUTPUT"
-          else
-            echo "build_target=final-cpu" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Check if already synced
@@ -82,7 +67,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # Use default credentials; empty token breaks checkout in hosted runners.
           fetch-depth: 0
 
       - name: Configure git
@@ -117,9 +101,17 @@ jobs:
 
   # ─────────────────────────────────────────────
   # 3. Сборка Docker образа
-  # --target=final-cpu: BuildKit строит только достижимые стадии
   # ─────────────────────────────────────────────
   docker-build:
+    strategy:
+      matrix:
+        include:
+          - target: final-cpu
+            suffix: ''
+            latest_tag: latest
+          - target: final-amd64
+            suffix: '-gpu'
+            latest_tag: gpu
     runs-on: ubuntu-latest
     needs: [resolve-upstream, sync-upstream]
     permissions:
@@ -134,23 +126,23 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build image (target=${{ needs.resolve-upstream.outputs.build_target }})
+      - name: Build image (target=${{ matrix.target }})
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile.secure
-          target: ${{ needs.resolve-upstream.outputs.build_target }}
+          target: ${{ matrix.target }}
           push: false
           load: true
           tags: |
-            ${{ env.DOCKER_IMAGE }}:${{ needs.resolve-upstream.outputs.upstream_tag }}
-            ${{ env.DOCKER_IMAGE }}:latest
+            ${{ env.DOCKER_IMAGE }}:${{ needs.resolve-upstream.outputs.upstream_tag }}${{ matrix.suffix }}
+            ${{ env.DOCKER_IMAGE }}:${{ matrix.latest_tag }}
           cache-from: type=gha
           cache-to:   type=gha,mode=max
 
       - name: Smoke-check locally before export
         env:
-          TAG: ${{ needs.resolve-upstream.outputs.upstream_tag }}
+          TAG: ${{ needs.resolve-upstream.outputs.upstream_tag }}${{ matrix.suffix }}
         run: |
           VERSION=$(docker run --rm "${{ env.DOCKER_IMAGE }}:${TAG}" ollama --version 2>&1 || true)
           echo "ollama --version output: $VERSION"
@@ -163,19 +155,22 @@ jobs:
 
       - name: Export image tar
         run: |
-          docker save "${{ env.DOCKER_IMAGE }}:${{ needs.resolve-upstream.outputs.upstream_tag }}" \
-            | gzip > /tmp/ollama-image.tar.gz
+          docker save "${{ env.DOCKER_IMAGE }}:${{ needs.resolve-upstream.outputs.upstream_tag }}${{ matrix.suffix }}" \
+            | gzip > /tmp/ollama-image-${{ matrix.target }}.tar.gz
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ollama-docker-image
-          path: /tmp/ollama-image.tar.gz
+          name: ollama-docker-image-${{ matrix.target }}
+          path: /tmp/ollama-image-${{ matrix.target }}.tar.gz
           retention-days: 1
 
   # ─────────────────────────────────────────────
   # 4. Сканирование безопасности (Trivy)
   # ─────────────────────────────────────────────
   security-scan:
+    strategy:
+      matrix:
+        target: [final-cpu, final-amd64]
     runs-on: ubuntu-latest
     needs: [resolve-upstream, docker-build]
     permissions:
@@ -184,18 +179,27 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: ollama-docker-image
+          name: ollama-docker-image-${{ matrix.target }}
           path: /tmp
 
       - name: Load Docker image
-        run: docker load < /tmp/ollama-image.tar.gz
+        run: docker load < /tmp/ollama-image-${{ matrix.target }}.tar.gz
+
+      - name: Get image suffix
+        id: info
+        run: |
+          if [ "${{ matrix.target }}" = "final-amd64" ]; then
+            echo "suffix=-gpu" >> "$GITHUB_OUTPUT"
+          else
+            echo "suffix=" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Trivy scan — SARIF (все CVE для Security tab)
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
         with:
-          image-ref: "${{ env.DOCKER_IMAGE }}:${{ needs.resolve-upstream.outputs.upstream_tag }}"
+          image-ref: "${{ env.DOCKER_IMAGE }}:${{ needs.resolve-upstream.outputs.upstream_tag }}${{ steps.info.outputs.suffix }}"
           format: sarif
-          output: trivy-results.sarif
+          output: trivy-results-${{ matrix.target }}.sarif
           severity: CRITICAL,HIGH
           ignore-unfixed: false
           exit-code: '0'
@@ -204,25 +208,34 @@ jobs:
         if: always()
         uses: github/codeql-action/upload-sarif@v3
         with:
-          sarif_file: trivy-results.sarif
-          category: trivy-docker
+          sarif_file: trivy-results-${{ matrix.target }}.sarif
+          category: trivy-docker-${{ matrix.target }}
 
       - name: Trivy scan — block on fixable CRITICAL/HIGH
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
         with:
-          image-ref: "${{ env.DOCKER_IMAGE }}:${{ needs.resolve-upstream.outputs.upstream_tag }}"
+          image-ref: "${{ env.DOCKER_IMAGE }}:${{ needs.resolve-upstream.outputs.upstream_tag }}${{ steps.info.outputs.suffix }}"
           format: table
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: '1'
 
       - name: Security scan passed
-        run: echo "✅ No fixable CRITICAL/HIGH CVEs found."
+        run: echo "✅ No fixable CRITICAL/HIGH CVEs found for ${{ matrix.target }}."
 
   # ─────────────────────────────────────────────
   # 5. Публикация на Docker Hub
   # ─────────────────────────────────────────────
   docker-push:
+    strategy:
+      matrix:
+        include:
+          - target: final-cpu
+            suffix: ''
+            latest_tag: latest
+          - target: final-amd64
+            suffix: '-gpu'
+            latest_tag: gpu
     runs-on: ubuntu-latest
     needs: [resolve-upstream, docker-build, security-scan]
     permissions:
@@ -231,11 +244,11 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: ollama-docker-image
+          name: ollama-docker-image-${{ matrix.target }}
           path: /tmp
 
       - name: Load Docker image
-        run: docker load < /tmp/ollama-image.tar.gz
+        run: docker load < /tmp/ollama-image-${{ matrix.target }}.tar.gz
 
       - name: Login to Docker Hub
         uses: docker/login-action@v3
@@ -246,16 +259,25 @@ jobs:
       - name: Push to Docker Hub
         env:
           TAG: ${{ needs.resolve-upstream.outputs.upstream_tag }}
+          SUFFIX: ${{ matrix.suffix }}
+          LATEST: ${{ matrix.latest_tag }}
         run: |
-          docker tag "${{ env.DOCKER_IMAGE }}:${TAG}" "${{ env.DOCKER_IMAGE }}:latest" 2>/dev/null || true
-          docker push "${{ env.DOCKER_IMAGE }}:${TAG}"
-          docker push "${{ env.DOCKER_IMAGE }}:latest"
-          echo "✅ Pushed ${{ env.DOCKER_IMAGE }}:${TAG} and :latest"
+          docker tag "${{ env.DOCKER_IMAGE }}:${TAG}${SUFFIX}" "${{ env.DOCKER_IMAGE }}:${LATEST}" 2>/dev/null || true
+          docker push "${{ env.DOCKER_IMAGE }}:${TAG}${SUFFIX}"
+          docker push "${{ env.DOCKER_IMAGE }}:${LATEST}"
+          echo "✅ Pushed ${{ env.DOCKER_IMAGE }}:${TAG}${SUFFIX} and :${LATEST}"
 
   # ─────────────────────────────────────────────
   # 6. Smoke-тест образа с Docker Hub
   # ─────────────────────────────────────────────
   smoke-test:
+    strategy:
+      matrix:
+        include:
+          - target: final-cpu
+            suffix: ''
+          - target: final-amd64
+            suffix: '-gpu'
     runs-on: ubuntu-latest
     needs: [resolve-upstream, docker-push]
     permissions:
@@ -269,14 +291,14 @@ jobs:
 
       - name: Pull image from Docker Hub
         env:
-          TAG: ${{ needs.resolve-upstream.outputs.upstream_tag }}
+          TAG: ${{ needs.resolve-upstream.outputs.upstream_tag }}${{ matrix.suffix }}
         run: |
           docker pull "${{ env.DOCKER_IMAGE }}:${TAG}"
           echo "✅ Pulled ${{ env.DOCKER_IMAGE }}:${TAG} from Docker Hub"
 
       - name: Smoke test — ollama version
         env:
-          TAG: ${{ needs.resolve-upstream.outputs.upstream_tag }}
+          TAG: ${{ needs.resolve-upstream.outputs.upstream_tag }}${{ matrix.suffix }}
         run: |
           VERSION=$(docker run --rm "${{ env.DOCKER_IMAGE }}:${TAG}" ollama --version 2>&1)
           echo "ollama --version: $VERSION"
@@ -289,7 +311,7 @@ jobs:
 
       - name: Smoke test — HTTP health check
         env:
-          TAG: ${{ needs.resolve-upstream.outputs.upstream_tag }}
+          TAG: ${{ needs.resolve-upstream.outputs.upstream_tag }}${{ matrix.suffix }}
         run: |
           docker run -d --name ollama-test \
             -p 11434:11434 \
@@ -327,16 +349,14 @@ jobs:
           SECURITY: ${{ needs.security-scan.result }}
           TEST:     ${{ needs.smoke-test.result }}
           TAG:      ${{ needs.resolve-upstream.outputs.upstream_tag }}
-          TARGET:   ${{ needs.resolve-upstream.outputs.build_target }}
         run: |
           echo "═══════════════════════════════════════"
           echo "  Tag        : $TAG"
-          echo "  Target     : $TARGET"
           echo "  Security   : $SECURITY"
           echo "  Smoke test : $TEST"
           echo "═══════════════════════════════════════"
           if [ "$SECURITY" = "success" ] && [ "$TEST" = "success" ]; then
-            echo "✅ SUCCESS — image is secure and tested."
+            echo "✅ SUCCESS — images are secure and tested."
             exit 0
           else
             echo "❌ FAILURE — see failed jobs above."

@@ -10,7 +10,7 @@
 
 ARG PARALLEL=8
 
-ARG ROCMVERSION=6.3.3
+ARG ROCMVERSION=7.1.1
 ARG JETPACK5VERSION=r35.4.1
 ARG JETPACK6VERSION=r36.4.0
 ARG CMAKEVERSION=3.31.2
@@ -21,8 +21,7 @@ FROM --platform=linux/amd64 rocm/dev-almalinux-8:${ROCMVERSION}-complete AS base
 RUN yum install -y yum-utils \
     && yum-config-manager --add-repo \
        https://developer.download.nvidia.com/compute/cuda/repos/rhel8/x86_64/cuda-rhel8.repo \
-    && dnf install -y ccache gcc-toolset-11-gcc gcc-toolset-11-gcc-c++ gcc-toolset-11-binutils \
-    && dnf install -y wget ninja-build \
+    && dnf install -y ccache gcc-toolset-11-gcc gcc-toolset-11-gcc-c++ gcc-toolset-11-binutils wget ninja-build \
     && ln -sf /usr/bin/python3 /usr/bin/python \
     && dnf update -y --security \
     && dnf clean all
@@ -38,7 +37,7 @@ RUN wget -q https://sdk.lunarg.com/sdk/download/${VULKANVERSION}/linux/vulkansdk
     && cp -r /tmp/${VULKANVERSION}/x86_64/bin/*     /usr/local/bin/ \
     && rm -rf /tmp/${VULKANVERSION} /tmp/vulkansdk.tar.xz
 
-FROM --platform=linux/arm64 almalinux:8 AS base-arm64
+FROM --platform=linux/arm64 almalinux:10.1 AS base-arm64
 RUN yum install -y yum-utils epel-release \
     && dnf install -y clang ccache \
     && yum-config-manager --add-repo \
@@ -61,7 +60,7 @@ RUN dnf install -y gcc-toolset-11-gcc gcc-toolset-11-gcc-c++ \
     && dnf clean all
 ENV PATH=/opt/rh/gcc-toolset-11/root/usr/bin:$PATH
 ARG PARALLEL
-COPY CMakeLists.txt CMakePresets.json .
+COPY CMakeLists.txt CMakePresets.json ./
 COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
 RUN --mount=type=cache,target=/root/.ccache \
     cmake --preset 'CPU' -B /src/build \
@@ -76,7 +75,7 @@ RUN dnf install -y cuda-toolkit-${CUDA12VERSION//./-} \
     && dnf clean all
 ENV PATH=/usr/local/cuda-12/bin:$PATH
 ARG PARALLEL
-COPY CMakeLists.txt CMakePresets.json .
+COPY CMakeLists.txt CMakePresets.json ./
 COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
 RUN --mount=type=cache,target=/root/.ccache \
     cmake --preset 'CUDA 12' -B /src/build \
@@ -91,7 +90,7 @@ RUN dnf install -y cuda-toolkit-${CUDA13VERSION//./-} \
     && dnf clean all
 ENV PATH=/usr/local/cuda-13/bin:$PATH
 ARG PARALLEL
-COPY CMakeLists.txt CMakePresets.json .
+COPY CMakeLists.txt CMakePresets.json ./
 COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
 RUN --mount=type=cache,target=/root/.ccache \
     cmake --preset 'CUDA 13' -B /src/build \
@@ -103,7 +102,7 @@ FROM base AS rocm-6
 WORKDIR /src
 ENV PATH=/opt/rocm/hcc/bin:/opt/rocm/hip/bin:/opt/rocm/bin:/opt/rocm/hcc/bin:$PATH
 ARG PARALLEL
-COPY CMakeLists.txt CMakePresets.json .
+COPY CMakeLists.txt CMakePresets.json ./
 COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
 RUN --mount=type=cache,target=/root/.ccache \
     cmake --preset 'ROCm 6' -B /src/build \
@@ -114,7 +113,7 @@ RUN bash -c 'set -eu; rm -f /src/dist/lib/ollama/rocm/rocblas/library/*gfx90[06]
 # ── Vulkan ─────────────────────────────────────────────────────────────────
 FROM base AS vulkan
 WORKDIR /src
-COPY CMakeLists.txt CMakePresets.json .
+COPY CMakeLists.txt CMakePresets.json ./
 COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
 ARG PARALLEL
 RUN --mount=type=cache,target=/root/.ccache \
@@ -126,13 +125,13 @@ RUN --mount=type=cache,target=/root/.ccache \
 FROM --platform=${BUILDPLATFORM:-linux/arm64} nvcr.io/nvidia/l4t-jetpack:${JETPACK5VERSION} AS jetpack-5
 WORKDIR /src
 ARG CMAKEVERSION
-RUN apt-get update && apt-get install -y curl ccache \
+RUN apt-get update && apt-get install -y --no-install-recommends curl ccache \
     && apt-get upgrade -y \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
     && curl -fsSL https://github.com/Kitware/CMake/releases/download/v${CMAKEVERSION}/cmake-${CMAKEVERSION}-linux-$(uname -m).tar.gz \
        | tar xz -C /usr/local --strip-components 1
-COPY CMakeLists.txt CMakePresets.json .
+COPY CMakeLists.txt CMakePresets.json ./
 COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
 ARG PARALLEL
 RUN --mount=type=cache,target=/root/.ccache \
@@ -144,13 +143,13 @@ RUN --mount=type=cache,target=/root/.ccache \
 FROM --platform=${BUILDPLATFORM:-linux/arm64} nvcr.io/nvidia/l4t-jetpack:${JETPACK6VERSION} AS jetpack-6
 WORKDIR /src
 ARG CMAKEVERSION
-RUN apt-get update && apt-get install -y curl ccache \
+RUN apt-get update && apt-get install -y --no-install-recommends curl ccache \
     && apt-get upgrade -y \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
     && curl -fsSL https://github.com/Kitware/CMake/releases/download/v${CMAKEVERSION}/cmake-${CMAKEVERSION}-linux-$(uname -m).tar.gz \
        | tar xz -C /usr/local --strip-components 1
-COPY CMakeLists.txt CMakePresets.json .
+COPY CMakeLists.txt CMakePresets.json ./
 COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
 ARG PARALLEL
 RUN --mount=type=cache,target=/root/.ccache \
@@ -166,7 +165,7 @@ RUN dnf install -y gcc-toolset-11-gcc gcc-toolset-11-gcc-c++ \
 ENV PATH=/opt/rh/gcc-toolset-11/root/usr/bin:$PATH
 ENV CC=/opt/rh/gcc-toolset-11/root/usr/bin/gcc
 ENV CXX=/opt/rh/gcc-toolset-11/root/usr/bin/g++
-COPY go.mod go.sum .
+COPY go.mod go.sum ./
 RUN curl -fsSL https://golang.org/dl/go$(awk '/^go/ { print $2 }' go.mod).linux-$(case $(uname -m) in x86_64) echo amd64;; aarch64) echo arm64;; esac).tar.gz \
     | tar xz -C /usr/local
 ENV PATH=/usr/local/go/bin:$PATH
