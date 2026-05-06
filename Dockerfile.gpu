@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# Hardened GPU
+# Hardened GPU Dockerfile for NVIDIA/CUDA environments
 ARG PARALLEL=8
 ARG CMAKEVERSION=3.31.2
 ARG CUDA12VERSION=12.6
@@ -52,7 +52,7 @@ WORKDIR /go/src/github.com/ollama/ollama
 COPY go.mod go.sum ./
 COPY . .
 RUN GOARCH=$(case $(uname -m) in x86_64) echo amd64;; aarch64) echo arm64;; esac) \
- && GOVERSION=$(awk "/^go /{print $2}" go.mod) \
+ && GOVERSION=$(awk "/^go /{print \$2}" go.mod) \
  && curl -fsSL https://golang.org/dl/go${GOVERSION}.linux-${GOARCH}.tar.gz | tar xz -C /usr/local
 ENV PATH=/usr/local/go/bin:/opt/rh/gcc-toolset-13/root/usr/bin:/usr/local/bin:/usr/bin:/bin
 RUN go mod download

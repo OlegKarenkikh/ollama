@@ -2,6 +2,15 @@ name: Docker Build, Security Scan & Publish
 
 on:
   workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: 'Upstream ollama tag to sync (e.g. v0.6.5). Leave empty to auto-detect latest.'
+        required: false
+        default: ''
+      target:
+        description: 'Build target: final-cpu (fast CI) | final-amd64 (full GPU) | final-arm64 | final-rocm'
+        required: false
+        default: 'final-cpu'
   schedule:
     - cron: '0 3 * * *'
 
@@ -10,51 +19,326 @@ env:
   DOCKER_IMAGE: olegkarenkikh/ollama
 
 jobs:
-  docker-build:
-    strategy:
-      matrix:
-        include:
-          - target: final
-            suffix: ''
-            latest_tag: latest
-            file: Dockerfile.secure
-          - target: final
-            suffix: '-gpu'
-            latest_tag: gpu
-            file: Dockerfile.gpu
+  # ─────────────────────────────────────────────
+  # 1. Получить последний стабильный тег upstream
+  # ─────────────────────────────────────────────
+  resolve-upstream:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      upstream_tag:   ${{ steps.tag.outputs.tag }}
+      already_synced: ${{ steps.check.outputs.already_synced }}
+      build_target:   ${{ steps.target.outputs.build_target }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve upstream tag
+        id: tag
+        run: |
+          INPUT="${{ github.event.inputs.upstream_tag }}"
+          if [ -n "$INPUT" ]; then
+            echo "tag=$INPUT" >> "$GITHUB_OUTPUT"
+          else
+            LATEST=$(curl -sf https://api.github.com/repos/ollama/ollama/releases/latest \
+              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              | jq -r .tag_name)
+            echo "Detected upstream latest tag: $LATEST"
+            echo "tag=$LATEST" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Resolve build target
+        id: target
+        run: |
+          INPUT_TARGET="${{ github.event.inputs.target }}"
+          if [ -n "$INPUT_TARGET" ]; then
+            echo "build_target=$INPUT_TARGET" >> "$GITHUB_OUTPUT"
+          else
+            echo "build_target=final-cpu" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check if already synced
+        id: check
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          if git tag --list | grep -qxE "${TAG}(-local)?" ; then
+            echo "already_synced=true" >> "$GITHUB_OUTPUT"
+            echo "Tag ${TAG} already present — skipping sync."
+          else
+            echo "already_synced=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ─────────────────────────────────────────────
+  # 2. Синхронизировать репозиторий с upstream
+  # ─────────────────────────────────────────────
+  sync-upstream:
+    runs-on: ubuntu-latest
+    needs: resolve-upstream
+    if: needs.resolve-upstream.outputs.already_synced == 'false'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Use default credentials; empty token breaks checkout in hosted runners.
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream tag
+        env:
+          TAG: ${{ needs.resolve-upstream.outputs.upstream_tag }}
+        run: |
+          git remote add upstream https://github.com/ollama/ollama.git || true
+          git fetch upstream "refs/tags/${TAG}:refs/tags/${TAG}" --no-tags
+
+      - name: Merge upstream tag (preserve local changes)
+        env:
+          TAG: ${{ needs.resolve-upstream.outputs.upstream_tag }}
+        run: |
+          git merge "${TAG}" \
+            --no-edit \
+            --strategy-option=ours \
+            -m "chore: sync upstream ${TAG} (preserve local changes)"
+
+      - name: Push updated main + local tag
+        env:
+          TAG: ${{ needs.resolve-upstream.outputs.upstream_tag }}
+        run: |
+          git remote set-url origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+          git push origin main
+          git tag -f "${TAG}-local"
+          git push origin "${TAG}-local" --force
+
+  # ─────────────────────────────────────────────
+  # 3. Сборка Docker образа
+  # --target=final-cpu: BuildKit строит только достижимые стадии
+  # ─────────────────────────────────────────────
+  docker-build:
+    runs-on: ubuntu-latest
+    needs: [resolve-upstream, sync-upstream]
+    permissions:
+      contents: read
+    if: |
+      always() &&
+      (needs.sync-upstream.result == 'success' || needs.sync-upstream.result == 'skipped') &&
+      needs.resolve-upstream.result == 'success'
+    steps:
+      - uses: actions/checkout@v4
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-      - name: Build image
+
+      - name: Build image (target=${{ needs.resolve-upstream.outputs.build_target }})
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ${{ matrix.file }}
-          target: ${{ matrix.target }}
+          file: Dockerfile.secure
+          target: ${{ needs.resolve-upstream.outputs.build_target }}
           push: false
           load: true
           tags: |
-            ${{ env.DOCKER_IMAGE }}:${{ matrix.latest_tag }}
+            ${{ env.DOCKER_IMAGE }}:${{ needs.resolve-upstream.outputs.upstream_tag }}
+            ${{ env.DOCKER_IMAGE }}:latest
           cache-from: type=gha
           cache-to:   type=gha,mode=max
-      - name: Trivy scan
-        uses: aquasecurity/trivy-action@master
+
+      - name: Smoke-check locally before export
+        env:
+          TAG: ${{ needs.resolve-upstream.outputs.upstream_tag }}
+        run: |
+          VERSION=$(docker run --rm "${{ env.DOCKER_IMAGE }}:${TAG}" ollama --version 2>&1 || true)
+          echo "ollama --version output: $VERSION"
+          if echo "$VERSION" | grep -qiE 'ollama|version|[0-9]+\.[0-9]+'  ; then
+            echo "✅ Local build: ollama --version OK"
+          else
+            echo "⚠️  Unexpected output — verifying binary exists"
+            docker run --rm "${{ env.DOCKER_IMAGE }}:${TAG}" ls -la /usr/bin/ollama
+          fi
+
+      - name: Export image tar
+        run: |
+          docker save "${{ env.DOCKER_IMAGE }}:${{ needs.resolve-upstream.outputs.upstream_tag }}" \
+            | gzip > /tmp/ollama-image.tar.gz
+
+      - uses: actions/upload-artifact@v4
         with:
-          image-ref: "${{ env.DOCKER_IMAGE }}:${{ matrix.latest_tag }}"
-          format: 'table'
-          exit-code: '1'
+          name: ollama-docker-image
+          path: /tmp/ollama-image.tar.gz
+          retention-days: 1
+
+  # ─────────────────────────────────────────────
+  # 4. Сканирование безопасности (Trivy)
+  # ─────────────────────────────────────────────
+  security-scan:
+    runs-on: ubuntu-latest
+    needs: [resolve-upstream, docker-build]
+    permissions:
+      security-events: write
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ollama-docker-image
+          path: /tmp
+
+      - name: Load Docker image
+        run: docker load < /tmp/ollama-image.tar.gz
+
+      - name: Trivy scan — SARIF (все CVE для Security tab)
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
+        with:
+          image-ref: "${{ env.DOCKER_IMAGE }}:${{ needs.resolve-upstream.outputs.upstream_tag }}"
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+          ignore-unfixed: false
+          exit-code: '0'
+
+      - name: Upload SARIF to GitHub Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-docker
+
+      - name: Trivy scan — block on fixable CRITICAL/HIGH
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
+        with:
+          image-ref: "${{ env.DOCKER_IMAGE }}:${{ needs.resolve-upstream.outputs.upstream_tag }}"
+          format: table
+          severity: CRITICAL,HIGH
           ignore-unfixed: true
-          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
+
+      - name: Security scan passed
+        run: echo "✅ No fixable CRITICAL/HIGH CVEs found."
+
+  # ─────────────────────────────────────────────
+  # 5. Публикация на Docker Hub
+  # ─────────────────────────────────────────────
+  docker-push:
+    runs-on: ubuntu-latest
+    needs: [resolve-upstream, docker-build, security-scan]
+    permissions:
+      contents: read
+    if: needs.security-scan.result == 'success'
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ollama-docker-image
+          path: /tmp
+
+      - name: Load Docker image
+        run: docker load < /tmp/ollama-image.tar.gz
+
       - name: Login to Docker Hub
-        if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           username: ${{ env.DOCKER_USER }}
           password: ${{ secrets.DH_TOKEN }}
+
       - name: Push to Docker Hub
-        if: github.event_name != 'pull_request'
-        run: docker push "${{ env.DOCKER_IMAGE }}:${{ matrix.latest_tag }}"
+        env:
+          TAG: ${{ needs.resolve-upstream.outputs.upstream_tag }}
+        run: |
+          docker tag "${{ env.DOCKER_IMAGE }}:${TAG}" "${{ env.DOCKER_IMAGE }}:latest" 2>/dev/null || true
+          docker push "${{ env.DOCKER_IMAGE }}:${TAG}"
+          docker push "${{ env.DOCKER_IMAGE }}:latest"
+          echo "✅ Pushed ${{ env.DOCKER_IMAGE }}:${TAG} and :latest"
+
+  # ─────────────────────────────────────────────
+  # 6. Smoke-тест образа с Docker Hub
+  # ─────────────────────────────────────────────
+  smoke-test:
+    runs-on: ubuntu-latest
+    needs: [resolve-upstream, docker-push]
+    permissions:
+      contents: none
+    steps:
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ env.DOCKER_USER }}
+          password: ${{ secrets.DH_TOKEN }}
+
+      - name: Pull image from Docker Hub
+        env:
+          TAG: ${{ needs.resolve-upstream.outputs.upstream_tag }}
+        run: |
+          docker pull "${{ env.DOCKER_IMAGE }}:${TAG}"
+          echo "✅ Pulled ${{ env.DOCKER_IMAGE }}:${TAG} from Docker Hub"
+
+      - name: Smoke test — ollama version
+        env:
+          TAG: ${{ needs.resolve-upstream.outputs.upstream_tag }}
+        run: |
+          VERSION=$(docker run --rm "${{ env.DOCKER_IMAGE }}:${TAG}" ollama --version 2>&1)
+          echo "ollama --version: $VERSION"
+          if echo "$VERSION" | grep -qiE 'ollama|version|[0-9]+\.[0-9]+'; then
+            echo "✅ ollama --version OK"
+          else
+            echo "❌ Unexpected output: $VERSION"
+            exit 1
+          fi
+
+      - name: Smoke test — HTTP health check
+        env:
+          TAG: ${{ needs.resolve-upstream.outputs.upstream_tag }}
+        run: |
+          docker run -d --name ollama-test \
+            -p 11434:11434 \
+            -e OLLAMA_HOST=0.0.0.0 \
+            "${{ env.DOCKER_IMAGE }}:${TAG}"
+
+          echo "Waiting for ollama HTTP on :11434 ..."
+          for i in $(seq 1 30); do
+            HTTP=$(curl -so /dev/null -w '%{http_code}' http://localhost:11434/ 2>/dev/null || echo "000")
+            if [ "$HTTP" = "200" ]; then
+              echo "✅ HTTP 200 on attempt $i"
+              docker stop ollama-test || true
+              exit 0
+            fi
+            echo "[$i/30] HTTP $HTTP — waiting 3s..."
+            sleep 3
+          done
+          echo "❌ Timeout — no HTTP 200"
+          docker logs ollama-test || true
+          docker stop ollama-test || true
+          exit 1
+
+  # ─────────────────────────────────────────────
+  # 7. Итог: SUCCESS только если security + smoke-test ✅
+  # ─────────────────────────────────────────────
+  pipeline-success:
+    runs-on: ubuntu-latest
+    needs: [resolve-upstream, security-scan, smoke-test]
+    if: always()
+    permissions:
+      contents: none
+    steps:
+      - name: Evaluate result
+        env:
+          SECURITY: ${{ needs.security-scan.result }}
+          TEST:     ${{ needs.smoke-test.result }}
+          TAG:      ${{ needs.resolve-upstream.outputs.upstream_tag }}
+          TARGET:   ${{ needs.resolve-upstream.outputs.build_target }}
+        run: |
+          echo "═══════════════════════════════════════"
+          echo "  Tag        : $TAG"
+          echo "  Target     : $TARGET"
+          echo "  Security   : $SECURITY"
+          echo "  Smoke test : $TEST"
+          echo "═══════════════════════════════════════"
+          if [ "$SECURITY" = "success" ] && [ "$TEST" = "success" ]; then
+            echo "✅ SUCCESS — image is secure and tested."
+            exit 0
+          else
+            echo "❌ FAILURE — see failed jobs above."
+            exit 1
+          fi
