@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:1
-# Hardened Dockerfile.secure for CI/CD publication
+# vim: filetype=dockerfile
+# Hardened Dockerfile.secure for production
 
 ARG PARALLEL=8
 ARG ROCMVERSION=6.3.3

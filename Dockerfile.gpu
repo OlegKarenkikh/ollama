@@ -1,6 +1,5 @@
 # syntax=docker/dockerfile:1
-# Hardened GPU Dockerfile for NVIDIA/CUDA environments
-
+# Hardened GPU
 ARG PARALLEL=8
 ARG CMAKEVERSION=3.31.2
 ARG CUDA12VERSION=12.6
