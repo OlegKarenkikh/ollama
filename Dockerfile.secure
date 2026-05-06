@@ -1,28 +1,16 @@
 # syntax=docker/dockerfile:1
-# vim: filetype=dockerfile
-# Hardened Dockerfile.secure for production
-
+# Hardened for production
 ARG PARALLEL=8
 ARG ROCMVERSION=6.3.3
 ARG CMAKEVERSION=3.31.2
-ARG VULKANVERSION=1.4.321.1
 
 FROM --platform=linux/amd64 rocm/dev-almalinux-9:${ROCMVERSION}-complete AS base-amd64
 RUN dnf install -y yum-utils \
     && yum-config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel9/x86_64/cuda-rhel9.repo \
-    && dnf install -y ccache gcc-toolset-13-gcc gcc-toolset-13-gcc-c++ gcc-toolset-13-binutils wget ninja-build \
-    && ln -sf /usr/bin/python3 /usr/bin/python \
+    && dnf install -y ccache gcc-toolset-13-gcc gcc-toolset-13-gcc-c++ gcc-toolset-13-binutils wget ninja-build curl \
     && dnf update -y --security \
     && dnf clean all
 ENV PATH=/opt/rh/gcc-toolset-13/root/usr/bin:$PATH
-ARG VULKANVERSION
-RUN wget -q https://sdk.lunarg.com/sdk/download/${VULKANVERSION}/linux/vulkansdk-linux-x86_64-${VULKANVERSION}.tar.xz -O /tmp/vulkansdk.tar.xz \
-    && tar xf /tmp/vulkansdk.tar.xz -C /tmp \
-    && /tmp/${VULKANVERSION}/vulkansdk -j 8 vulkan-headers shaderc \
-    && cp -r /tmp/${VULKANVERSION}/x86_64/include/* /usr/local/include/ \
-    && cp -r /tmp/${VULKANVERSION}/x86_64/lib/*     /usr/local/lib/ \
-    && cp -r /tmp/${VULKANVERSION}/x86_64/bin/*     /usr/local/bin/ \
-    && rm -rf /tmp/${VULKANVERSION} /tmp/vulkansdk.tar.xz
 
 FROM --platform=linux/arm64 almalinux:9 AS base-arm64
 RUN yum install -y yum-utils epel-release \
@@ -50,8 +38,6 @@ RUN cmake --preset 'CPU' -B /src/build \
 
 FROM base AS build
 WORKDIR /go/src/github.com/ollama/ollama
-RUN dnf install -y gcc-toolset-13-gcc gcc-toolset-13-gcc-c++ && dnf clean all
-ENV PATH=/opt/rh/gcc-toolset-13/root/usr/bin:$PATH
 COPY go.mod go.sum ./
 RUN GOARCH=$(case $(uname -m) in x86_64) echo amd64;; aarch64) echo arm64;; esac) \
     && GOVERSION=$(awk '/^go /{print $2}' go.mod) \
