@@ -4,6 +4,7 @@ import (
 	"math"
 	"testing"
 
+	"github.com/ollama/ollama/x/mlxrunner/batch"
 	"github.com/ollama/ollama/x/mlxrunner/mlx"
 	"github.com/ollama/ollama/x/models/nn"
 )
@@ -251,7 +252,12 @@ func TestTinyLagunaLoadAndForward(t *testing.T) {
 			}
 		}
 	}()
-	hidden := m.Forward(tokens, caches)
+	b := &batch.Batch{
+		InputIDs: tokens,
+		SeqOffsets: []int32{0},
+		SeqQueryLens: []int32{int32(tokens.Dim(1))},
+	}
+	hidden := m.Forward(b, caches)
 	mlx.Eval(hidden)
 	if got := hidden.Dims(); len(got) != 3 || got[0] != 1 || got[1] != 3 || got[2] != 8 {
 		t.Fatalf("hidden shape = %v, want [1 3 8]", got)

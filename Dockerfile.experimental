@@ -1,97 +1,76 @@
-ARG CMAKEVERSION=3.31.10
-ARG UBUNTU_VERSION=24.04
-ARG CUDA_VERSION=12.8.0
+ARG CUDA_IMAGE=nvidia/cuda:12.0.0-devel-ubuntu22.04
+ARG RUNTIME_IMAGE=nvidia/cuda:12.0.0-runtime-ubuntu22.04
+ARG CMAKEVERSION=3.31.5
+ARG PARALLEL=4
 
-# Builder stage using NVIDIA's devel image (likely cleaner than rocm/dev-almalinux-8)
-FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu24.04 AS base
+# 1. Builder Stage
+FROM --platform=linux/amd64 ${CUDA_IMAGE} AS build
 ARG CMAKEVERSION
+ARG PARALLEL
+
 ENV DEBIAN_FRONTEND=noninteractive
-
-# Update and install build dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
-    ca-certificates \
-    build-essential \
-    git \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install CMake manually to ensure version compatibility
-RUN curl -fsSL https://github.com/Kitware/CMake/releases/download/v${CMAKEVERSION}/cmake-${CMAKEVERSION}-linux-x86_64.tar.gz | tar xz -C /usr/local --strip-components 1
-
-# CPU Backend Builder
-FROM base AS cpu
-ARG PARALLEL=1
-COPY CMakeLists.txt CMakePresets.json .
-COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
-RUN --mount=type=cache,target=/root/.ccache \
-    cmake --preset 'CPU' \
-    && cmake --build --parallel ${PARALLEL} --preset 'CPU' \
-    && cmake --install build --component CPU --strip --parallel ${PARALLEL}
-
-# CUDA 12 Backend Builder
-FROM base AS cuda-12
-ARG PARALLEL=1
-COPY CMakeLists.txt CMakePresets.json .
-COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
-# The devel image has the toolkit, so we can just build
-RUN --mount=type=cache,target=/root/.ccache \
-    cmake --preset 'CUDA 12' \
-    && cmake --build --parallel ${PARALLEL} --preset 'CUDA 12' \
-    && cmake --install build --component CUDA --strip --parallel ${PARALLEL}
-
-# Go Binary Builder
-FROM base AS build
-WORKDIR /go/src/github.com/ollama/ollama
-COPY go.mod go.sum .
-# Extract Go version from go.mod and install
-RUN GO_VERSION=$(awk '/^go/ { print $2 }' go.mod) && \
-    curl -fsSL https://golang.org/dl/go${GO_VERSION}.linux-amd64.tar.gz | tar xz -C /usr/local
-ENV PATH=/usr/local/go/bin:$PATH
-RUN go mod download && go mod tidy
-COPY . .
-ENV CGO_ENABLED=1
-# Build the binary
-RUN --mount=type=cache,target=/root/.cache/go-build \
-    go build -trimpath -buildmode=pie -o /bin/ollama .
-
-# Final Stage
-FROM ubuntu:${UBUNTU_VERSION}
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Security updates and runtime dependencies
-RUN apt-get update \
-    && apt-get dist-upgrade -y \
-    && apt-get install -y --no-install-recommends \
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        build-essential \
         ca-certificates \
-        libgcc1 \
+        curl \
+        git \
+        ninja-build \
+        pkg-config && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL https://github.com/Kitware/CMake/releases/download/v${CMAKEVERSION}/cmake-${CMAKEVERSION}-linux-x86_64.tar.gz \
+    | tar xz -C /usr/local --strip-components 1
+
+WORKDIR /workspace/ollama
+COPY go.mod go.sum ./
+RUN GO_VERSION=$(awk '/^go/ { print $2 }' go.mod) && \
+    curl -fsSL https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz \
+    | tar xz -C /usr/local
+ENV PATH="/usr/local/go/bin:${PATH}"
+
+COPY CMakeLists.txt CMakePresets.json ./
+COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
+# Remove archs not supported by CUDA 12.0 (like 90a, 120)
+RUN sed -i 's/120-real;//g' CMakePresets.json || true
+RUN sed -i 's/120;//g' CMakePresets.json || true
+RUN sed -i 's/90a-real;//g' CMakePresets.json || true
+
+RUN cmake --preset "CUDA 12" && \
+    cmake --build --preset "CUDA 12" --parallel ${PARALLEL} && \
+    cmake --install build --component CUDA --strip --parallel ${PARALLEL}
+
+COPY . .
+# Setting CGO_ENABLED=1 is critical for ollama to bind with CUDA/GGML.
+RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -o /usr/local/bin/ollama .
+
+# 2. Runtime Stage
+FROM --platform=linux/amd64 ${RUNTIME_IMAGE} AS runtime
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Update base and install necessary runtime libraries.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
         libstdc++6 \
-        coreutils \
-        gnupg2 \
-        libgcrypt20 \
-        libpam0g \
-        libssl3 \
-        passwd \
-        tar \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+        libgcc-s1 \
+        curl \
+        openssl && \
+    rm -rf /var/lib/apt/lists/*
 
-# Setup user
-RUN groupadd -r ollama && useradd -r -g ollama ollama \
-    && mkdir -p /home/ollama \
-    && chown -R ollama:ollama /home/ollama
+RUN groupadd --system ollama && \
+    useradd --system --gid ollama --create-home --home-dir /home/ollama --shell /usr/sbin/nologin ollama
 
-# Copy binaries and libraries
-COPY --from=build /bin/ollama /usr/bin/ollama
-COPY --from=cpu /go/src/github.com/ollama/ollama/dist/lib/ollama /usr/lib/ollama
-COPY --from=cuda-12 /go/src/github.com/ollama/ollama/dist/lib/ollama /usr/lib/ollama
+COPY --from=build /usr/local/bin/ollama /usr/local/bin/ollama
+COPY --from=build /workspace/ollama/dist/lib/ollama /usr/local/lib/ollama
+RUN chown -R ollama:ollama /usr/local/bin/ollama /usr/local/lib/ollama
 
-# Env vars
-ENV LD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64
+ENV LD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/local/lib/ollama
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
 ENV NVIDIA_VISIBLE_DEVICES=all
 ENV OLLAMA_HOST=0.0.0.0:11434
 
-USER ollama
 EXPOSE 11434
-ENTRYPOINT ["/usr/bin/ollama"]
+USER ollama
+ENTRYPOINT ["/usr/local/bin/ollama"]
 CMD ["serve"]
