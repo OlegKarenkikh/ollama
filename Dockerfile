@@ -8,18 +8,20 @@ COPY go.mod go.sum ./
 RUN GO_VERSION=$(awk '/^go/ { print $2 }' go.mod) && curl -fsSL https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz | tar xz -C /usr/local
 ENV PATH="/usr/local/go/bin:${PATH}"
 COPY CMakeLists.txt CMakePresets.json ./
-COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
+COPY ml/backend/ggml/ggml/ ml/backend/ggml/ggml/
 RUN cmake --preset "CPU" && cmake --build --preset "CPU" --parallel 1 && cmake --install build --component CPU --strip --parallel 1
 COPY . .
 RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -o /usr/local/bin/ollama .
 
 # Final stage using distroless
 FROM cgr.dev/chainguard/wolfi-base:latest
-RUN apk update && apk upgrade && apk add ca-certificates libstdc++ libgcc && rm -rf /var/cache/apk/*
+RUN apk update && apk upgrade && apk add --no-cache ca-certificates libstdc++ libgcc && rm -rf /var/cache/apk/*
 RUN addgroup -S ollama && adduser -S ollama -G ollama
 COPY --from=build /usr/local/bin/ollama /usr/local/bin/ollama
-COPY --from=build /workspace/ollama/dist /usr/local/lib/ollama
+COPY --from=build /workspace/ollama/dist/ /usr/local/lib/ollama/
 RUN chown -R ollama:ollama /usr/local/bin/ollama /usr/local/lib/ollama
 USER ollama
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+  CMD ["/usr/local/bin/ollama", "list"]
 ENTRYPOINT ["/usr/local/bin/ollama"]
 CMD ["serve"]
