@@ -1,5 +1,5 @@
 # Builder stage
-FROM ubuntu:24.04 AS build
+FROM public.ecr.aws/docker/library/ubuntu:24.04 AS build
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get dist-upgrade -y && apt-get install -y --no-install-recommends curl ca-certificates build-essential git && rm -rf /var/lib/apt/lists/*
 RUN curl -fsSL https://github.com/Kitware/CMake/releases/download/v3.31.5/cmake-3.31.5-linux-x86_64.tar.gz | tar xz -C /usr/local --strip-components 1
@@ -13,7 +13,7 @@ RUN cmake --preset "CPU" && cmake --build --preset "CPU" --parallel 1 && cmake -
 COPY . .
 RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -o /usr/local/bin/ollama .
 
-# Final stage using distroless
+# Final stage using chainguard wolfi-base
 FROM cgr.dev/chainguard/wolfi-base:latest
 RUN apk update && apk upgrade && apk add --no-cache ca-certificates libstdc++ libgcc && rm -rf /var/cache/apk/*
 RUN addgroup -S ollama && adduser -S ollama -G ollama
