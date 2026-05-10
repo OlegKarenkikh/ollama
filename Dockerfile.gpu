@@ -1,15 +1,14 @@
 # syntax=docker/dockerfile:1
-# Hardened GPU Dockerfile for NVIDIA/CUDA environments
+# Hardened GPU Dockerfile for NVIDIA/CUDA 12.0
 ARG PARALLEL=8
 ARG CMAKEVERSION=3.31.2
-ARG CUDA12VERSION=12.6
 
 FROM almalinux:9 AS base
 ARG CMAKEVERSION
 RUN dnf update -y --security \
- && dnf install -y epel-release \
+ && dnf install -y --allowerasing epel-release \
  && dnf config-manager --set-enabled crb \
- && dnf install -y make ninja-build wget ca-certificates gcc-toolset-13-gcc gcc-toolset-13-gcc-c++ gcc-toolset-13-binutils curl \
+ && dnf install -y --allowerasing make ninja-build wget ca-certificates gcc-toolset-13-gcc gcc-toolset-13-gcc-c++ gcc-toolset-13-binutils curl \
  && dnf clean all \
  && curl -fsSL https://github.com/Kitware/CMake/releases/download/v${CMAKEVERSION}/cmake-${CMAKEVERSION}-linux-$(uname -m).tar.gz | tar xz -C /usr/local --strip-components 1
 ENV PATH=/opt/rh/gcc-toolset-13/root/usr/bin:/usr/local/bin:/usr/bin:/bin
@@ -25,19 +24,14 @@ RUN cmake --preset CPU -B /src/build \
  && cmake --build /src/build --parallel ${PARALLEL} \
  && cmake --install /src/build --component CPU --prefix /src/dist --strip --parallel ${PARALLEL}
 
-FROM ubuntu:24.04 AS cuda12-build
+# Build stage for CUDA 12.0
+FROM nvidia/cuda:12.0.1-devel-ubuntu22.04 AS cuda-build
 ARG CMAKEVERSION
-ARG CUDA12VERSION
 ARG PARALLEL
+ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
- && apt-get install -y --no-install-recommends curl ca-certificates gnupg2 ninja-build make gcc g++ ccache \
+ && apt-get install -y --no-install-recommends curl ca-certificates ninja-build make gcc g++ \
  && rm -rf /var/lib/apt/lists/*
-RUN curl -fsSL https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/3bf863cc.pub | gpg --dearmor -o /usr/share/keyrings/nvidia-cuda.gpg
-RUN echo "deb [signed-by=/usr/share/keyrings/nvidia-cuda.gpg] https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/ /" > /etc/apt/sources.list.d/cuda.list
-RUN apt-get update \
- && apt-get install -y --no-install-recommends cuda-nvcc-12-6 cuda-cudart-dev-12-6 libcublas-dev-12-6 \
- && apt-get clean && rm -rf /var/lib/apt/lists/*
-ENV PATH=/usr/local/cuda-12/bin:/usr/local/bin:/usr/bin:/bin
 RUN curl -fsSL https://github.com/Kitware/CMake/releases/download/v${CMAKEVERSION}/cmake-${CMAKEVERSION}-linux-$(uname -m).tar.gz | tar xz -C /usr/local --strip-components 1
 WORKDIR /src
 COPY CMakeLists.txt CMakePresets.json ./
@@ -58,13 +52,14 @@ RUN go mod download
 ENV CGO_ENABLED=1
 RUN go build -trimpath -buildmode=pie -ldflags="-w -s" -o /bin/ollama .
 
-FROM ubuntu:24.04 AS final
+# Final image based on CUDA 12.0 runtime
+FROM nvidia/cuda:12.0.1-runtime-ubuntu22.04 AS final
 RUN apt-get update && apt-get upgrade -y \
- && apt-get install -y --no-install-recommends ca-certificates libgcc-s1 libstdc++6 libvulkan1 \
+ && apt-get install -y --no-install-recommends ca-certificates libvulkan1 \
  && apt-get clean && rm -rf /var/lib/apt/lists/*
 COPY --from=go-build /bin/ollama /usr/bin/ollama
 COPY --from=cpu-build /src/dist/lib/ollama/ /usr/lib/ollama/
-COPY --from=cuda12-build /src/dist/lib/ollama/ /usr/lib/ollama/
+COPY --from=cuda-build /src/dist/lib/ollama/ /usr/lib/ollama/
 ENV LD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/lib/ollama
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
 ENV NVIDIA_VISIBLE_DEVICES=all
